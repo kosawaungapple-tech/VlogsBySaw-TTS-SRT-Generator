@@ -1,1 +1,5 @@
-Permission denied
+{
+  "name": "3🎬 Movie Recap: Cinematic Burmese Narration",
+  "description": "A high-fidelity movie recap tool for Burmese voiceovers. Features cinematic summaries and precise narration.",
+  "requestFramePermissions": []
+}
