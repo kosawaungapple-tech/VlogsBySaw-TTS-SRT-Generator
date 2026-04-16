@@ -12,13 +12,16 @@ service cloud.firestore {
     //   - accessCode: string
     //   - createdAt: string
     //
-    // Collection: authorized_users
+    // Collection: vlogs_users
     // Document ID: accessCode
     // Fields:
     //   - id: string
+    //   - userId: string
     //   - label: string
     //   - isActive: boolean
     //   - role: string ("admin" | "user")
+    //   - password: string (optional)
+    //   - expiryDate: string (optional)
     //   - api_key_stored: string (optional)
     //   - createdAt: string
     //   - createdBy: string
@@ -52,19 +55,18 @@ service cloud.firestore {
     // Fields:
     //   - firebase_project_id: string
     //   - firebase_api_key: string
-    // ===============================================================
-
-    // ===============================================================
-    // Devil's Advocate Attack Documentation
-    // ===============================================================
-    // 1. Public List Exploit: FAILED. Default deny on all collections.
-    // 2. Unauthorized Read/Write: FAILED. Checks for isDocOwner() or isAdmin().
-    // 3. The "Update Bypass": FAILED. update rules call isValidX() functions.
-    // 4. Ownership Hijacking: FAILED. uidUnchanged() and uidNotModified() checks.
-    // 5. Immutable Field Modification: FAILED. resource.data.userId == request.resource.data.userId checks.
-    // 6. Data Corruption: FAILED. Type checks (is string, is bool) in validation functions.
-    // 7. Privilege Escalation: FAILED. role is validated and only admins can change roles.
-    // 8. Resource Exhaustion: FAILED. .size() checks on strings.
+    //
+    // Collection: user_controls
+    // Document ID: vbsId
+    // Fields:
+    //   - vbsId: string
+    //   - dailyUsage: number
+    //   - lastUsedDate: string
+    //   - isUnlimited: boolean
+    //   - isBlocked: boolean
+    //   - customLimit: number (optional)
+    //   - expiryDate: string (optional)
+    //   - updatedAt: timestamp
     // ===============================================================
 
     // ===============================================================
@@ -83,14 +85,12 @@ service cloud.firestore {
     function isAdmin() {
       let accessCode = getAccessCode();
       return isAuthenticated() && (
-        (accessCode != null && (
-          accessCode == 'saw_vlogs_2026' ||
-          (exists(/databases/$(database)/documents/authorized_users/$(accessCode)) &&
-           get(/databases/$(database)/documents/authorized_users/$(accessCode)).data.role == 'admin')
-        )) ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
-        (request.auth.token.email == "kosawaung.apple@gmail.com" && request.auth.token.email_verified == true)
+        (accessCode == 'saw_vlogs_2026') ||
+        (accessCode == 'SAW-ADMIN-2026') ||
+        (accessCode != null && 
+         exists(/databases/$(database)/documents/vlogs_users/$(accessCode)) &&
+         get(/databases/$(database)/documents/vlogs_users/$(accessCode)).data.role == 'admin') ||
+        (request.auth.token.email == "hankozinsa@gmail.com" && request.auth.token.email_verified == true)
       );
     }
 
@@ -100,8 +100,8 @@ service cloud.firestore {
     }
 
     function isValidAuthorizedUser(data) {
-      return data.keys().hasAll(['id', 'isActive', 'role']) &&
-             data.id is string && data.id.size() > 0 && data.id.size() < 100 &&
+      return data.keys().hasAll(['isActive', 'role']) &&
+             (!('userId' in data) || (data.userId is string && data.userId.size() > 0)) &&
              data.isActive is bool &&
              data.role in ['admin', 'user'];
     }
@@ -117,6 +117,17 @@ service cloud.firestore {
       return data.keys().hasAll(['original', 'replacement']) &&
              data.original is string && data.original.size() > 0 && data.original.size() < 500 &&
              data.replacement is string && data.replacement.size() < 500;
+    }
+
+    function isValidUserControl(data) {
+      return data.keys().hasAll(['vbsId', 'dailyUsage', 'lastUsedDate', 'isUnlimited', 'isBlocked']) &&
+             data.vbsId is string && data.vbsId.size() > 0 && data.vbsId.size() < 100 &&
+             data.dailyUsage is number &&
+             data.lastUsedDate is string &&
+             data.isUnlimited is bool &&
+             data.isBlocked is bool &&
+             (!('membershipStatus' in data) || data.membershipStatus in ['standard', 'premium']) &&
+             (!('expiryDate' in data) || data.expiryDate is string);
     }
 
     function isValidSession(data) {
@@ -136,14 +147,17 @@ service cloud.firestore {
       allow delete: if isAuthenticated() && request.auth.uid == uid;
     }
 
-    match /authorized_users/{accessCode} {
+    match /vlogs_users/{accessCode} {
       // Anyone authenticated can try to get a specific access code to log in
       allow get: if isAuthenticated();
       // Only admins can list all users
       allow list: if isAdmin();
       
-      // Admins can create new users, or anyone can bootstrap the default admin once
-      allow create: if (isAdmin() || (accessCode == 'SAW-ADMIN-2026' && !exists(/databases/$(database)/documents/authorized_users/SAW-ADMIN-2026))) && isValidAuthorizedUser(request.resource.data);
+      // Admins can create new users, or anyone can bootstrap the default admins once
+      allow create: if (isAdmin() || 
+                       (accessCode == 'SAW-ADMIN-2026' && !exists(/databases/$(database)/documents/vlogs_users/SAW-ADMIN-2026)) ||
+                       (accessCode == 'saw_vlogs_2026' && !exists(/databases/$(database)/documents/vlogs_users/saw_vlogs_2026))) && 
+                       isValidAuthorizedUser(request.resource.data);
       
       // Users can update their own API key, but cannot change their role or ID
       allow update: if isAuthenticated() && isValidAuthorizedUser(request.resource.data) && (
@@ -152,7 +166,6 @@ service cloud.firestore {
           getAccessCode() == accessCode &&
           request.resource.data.role == resource.data.role &&
           request.resource.data.isActive == resource.data.isActive &&
-          request.resource.data.id == resource.data.id &&
           (!('api_key_stored' in request.resource.data) || request.resource.data.api_key_stored is string)
         )
       );
@@ -193,6 +206,30 @@ service cloud.firestore {
     match /users/{userId} {
       // Used for Google Auth admins
       allow read, write: if isAdmin();
+    }
+
+    match /user_controls/{vbsId} {
+      // Users can read their own control doc, admins can read all
+      allow read: if isAuthenticated();
+      
+      // Admins or users can initialize their own control doc
+      allow create: if isAuthenticated() && (isAdmin() || (isValidUserControl(request.resource.data) && request.resource.data.vbsId == vbsId));
+      
+      // Users can update their usage, but not flags. Admins can update everything.
+      allow update: if isAuthenticated() && (
+        isAdmin() || 
+        (
+          isValidUserControl(request.resource.data) &&
+          request.resource.data.vbsId == resource.data.vbsId &&
+          request.resource.data.isUnlimited == resource.data.isUnlimited &&
+          request.resource.data.isBlocked == resource.data.isBlocked &&
+          (!('membershipStatus' in request.resource.data) || request.resource.data.membershipStatus == resource.data.membershipStatus) &&
+          (!('expiryDate' in request.resource.data) || request.resource.data.expiryDate == resource.data.expiryDate) &&
+          (!('customLimit' in request.resource.data) || request.resource.data.customLimit == resource.data.customLimit)
+        )
+      );
+      
+      allow delete: if isAdmin();
     }
 
     match /test/{docId} {

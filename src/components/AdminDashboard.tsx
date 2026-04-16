@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
-  Shield, 
+  ShieldCheck, 
+  ShieldAlert,
+  Shield,
   UserPlus, 
   Trash2, 
   CheckCircle2, 
@@ -11,10 +13,10 @@ import {
   Key,
   Calendar,
   User,
+  Mic2,
   AlertCircle,
   RefreshCw,
   Lock,
-  LogOut,
   Settings,
   Database,
   Send,
@@ -22,35 +24,183 @@ import {
   EyeOff,
   Save,
   Languages,
-  Edit3
+  Edit3,
+  FileVideo,
+  Sparkles,
+  History,
+  X,
+  LogIn
 } from 'lucide-react';
-import { AuthorizedUser, User as RegisteredUser, SystemConfig, PronunciationRule } from '../types';
-import { db, collection, onSnapshot, query, orderBy, setDoc, doc, deleteDoc, updateDoc, handleFirestoreError, OperationType, getDoc, auth } from '../firebase';
+import { AuthorizedUser, User as RegisteredUser, SystemConfig, PronunciationRule, GlobalSettings, VBSUserControl, ActivityLog } from '../types';
+import { db, collection, onSnapshot, query, orderBy, setDoc, doc, deleteDoc, updateDoc, handleFirestoreError, OperationType, getDoc, auth, googleProvider, signInWithPopup, where, limit, getDocs } from '../firebase';
+import { GeminiTTSService } from '../services/geminiService';
 import { Toast, ToastType } from './Toast';
+import { Modal, ModalType } from './Modal';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface AdminDashboardProps {
   isAuthReady: boolean;
-  isAdmin: boolean;
-  isSessionSynced: boolean;
-  onLogout: () => void;
-  onConfigUpdate?: (config: SystemConfig) => void;
+  onAdminLogin?: (code: string) => void;
+  configOnly?: boolean;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isAdmin, isSessionSynced, onLogout, onConfigUpdate }) => {
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onAdminLogin, configOnly = false }) => {
+  const { t } = useLanguage();
   const [authorizedUsers, setAuthorizedUsers] = useState<AuthorizedUser[]>([]);
   const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUsersLoading, setIsUsersLoading] = useState(true);
   const [newId, setNewId] = useState('');
   const [newNote, setNewNote] = useState('');
-  const [newExpiryDate, setNewExpiryDate] = useState('');
   const [newRole, setNewRole] = useState<'admin' | 'user'>('user');
+  const [newExpiryDate, setNewExpiryDate] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeletingUser, setIsDeletingUser] = useState<string | null>(null);
   const [isVerifyingUser, setIsVerifyingUser] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [vbsUsers, setVbsUsers] = useState<VBSUserControl[]>([]);
+  const [isVbsUsersLoading, setIsVbsUsersLoading] = useState(true);
+  const [editingExpiryUser, setEditingExpiryUser] = useState<string | null>(null);
+  const [expiryDateInput, setExpiryDateInput] = useState('');
   
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+  const [selectedUserLogs, setSelectedUserLogs] = useState<string | null>(null);
+  const [isLogsLoading, setIsLogsLoading] = useState(false);
+
+  const timeSince = (date: Date) => {
+    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+    if (seconds < 0) return "Just now";
+    let interval = seconds / 31536000;
+    if (interval > 1) return Math.floor(interval) + " years";
+    interval = seconds / 2592000;
+    if (interval > 1) return Math.floor(interval) + " months";
+    interval = seconds / 86400;
+    if (interval > 1) return Math.floor(interval) + " days";
+    interval = seconds / 3600;
+    if (interval > 1) return Math.floor(interval) + " hours";
+    interval = seconds / 60;
+    if (interval > 1) return Math.floor(interval) + " minutes";
+    return Math.floor(seconds) + " seconds";
+  };
+
+  const handleShowActivityLogs = async (vbsId: string) => {
+    setSelectedUserLogs(vbsId);
+    setIsLogsLoading(true);
+    try {
+      const q = query(
+        collection(db, 'activity_logs'), 
+        where('vbsId', '==', vbsId), 
+        orderBy('createdAt', 'desc'),
+        limit(50)
+      );
+      const snapshot = await getDocs(q);
+      const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ActivityLog));
+      setActivityLogs(logs);
+    } catch (err) {
+      console.error("Failed to fetch logs:", err);
+      setToast({ message: t('errors.generic'), type: 'error', isVisible: true });
+    } finally {
+      setIsLogsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const q = query(collection(db, 'user_controls'), orderBy('updatedAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const users = snapshot.docs.map(doc => doc.data() as VBSUserControl);
+      setVbsUsers(users);
+      setIsVbsUsersLoading(false);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'user_controls');
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleUpdateVbsUser = async (vbsId: string, updates: Partial<VBSUserControl>) => {
+    try {
+      await setDoc(doc(db, 'user_controls', vbsId), {
+        ...updates,
+        vbsId: vbsId, // Ensure ID is present if creating
+        updatedAt: new Date()
+      }, { merge: true });
+
+      // Sync expiryDate to vlogs_users if present
+      if (updates.expiryDate !== undefined) {
+        await updateDoc(doc(db, 'vlogs_users', vbsId), {
+          expiryDate: updates.expiryDate
+        }).catch(() => {}); // Ignore if doc doesn't exist
+      }
+    } catch (err) {
+      console.error("Failed to update user:", err);
+    }
+  };
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [visiblePasswords, setVisiblePasswords] = useState<Set<string>>(new Set());
+  
+  const togglePasswordVisibility = (id: string) => {
+    const newSet = new Set(visiblePasswords);
+    if (newSet.has(id)) {
+      newSet.delete(id);
+    } else {
+      newSet.add(id);
+    }
+    setVisiblePasswords(newSet);
+  };
+
+  const NO_EXPIRY_LABEL = "သက်တမ်းအကန့်အသတ်မရှိ";
+
+  const renderExpiry = (expiryDate: string | null | undefined) => {
+    const isNoExpiry = !expiryDate;
+    
+    if (isNoExpiry) {
+      return (
+        <span className="flex items-center gap-2 text-[11px] font-bold text-amber-500 whitespace-nowrap bg-amber-500/5 px-2 py-1 rounded-md border border-amber-500/10">
+          <Calendar size={12} className="shrink-0" />
+          {t('admin.expiryUnlimited')}
+        </span>
+      );
+    }
+
+    try {
+      const d = new Date(expiryDate as string);
+      if (isNaN(d.getTime())) {
+        return (
+          <span className="flex items-center gap-2 text-[11px] font-bold text-amber-500 whitespace-nowrap bg-amber-500/5 px-2 py-1 rounded-md border border-amber-500/10">
+            <Calendar size={12} className="shrink-0" />
+            {NO_EXPIRY_LABEL}
+          </span>
+        );
+      }
+
+      const isExpired = d.getTime() < Date.now();
+      const day = d.getDate().toString().padStart(2, '0');
+      const month = (d.getMonth() + 1).toString().padStart(2, '0');
+      const year = d.getFullYear();
+      const formatted = `${day}/${month}/${year}`;
+
+      return (
+        <div className="flex flex-col gap-1 items-start">
+          <span className={`flex items-center gap-2 text-[11px] font-bold whitespace-nowrap px-2 py-1 rounded-md border ${
+            isExpired 
+              ? 'text-rose-500 bg-rose-500/5 border-rose-500/10' 
+              : 'text-emerald-400 bg-emerald-400/5 border-emerald-400/20 shadow-[0_0_10px_rgba(52,211,153,0.1)]'
+          }`}>
+            <Calendar size={12} className="shrink-0" />
+            {formatted}
+          </span>
+          {isExpired && (
+            <span className="text-[8px] text-rose-500 font-black uppercase tracking-widest ml-1 animate-pulse">
+              {t('admin.expired')}
+            </span>
+          )}
+        </div>
+      );
+    } catch (e) {
+      return <span className="text-xs text-slate-400">Invalid</span>;
+    }
+  };
+
   // Toast State
   const [toast, setToast] = useState<{ message: string; type: ToastType; isVisible: boolean }>({
     message: '',
@@ -58,57 +208,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
     isVisible: false
   });
   
+  // Admin Auth Protection
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [adminIdInput, setAdminIdInput] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'users' | 'system' | 'rules'>('users');
 
   // System Settings State
-  const [systemConfig, setSystemConfig] = useState<SystemConfig>(() => {
-    try {
-      const saved = localStorage.getItem('vbs_system_config');
-      let config: SystemConfig = saved ? JSON.parse(saved) : {
-        firebase_project_id: '',
-        firebase_api_key: '',
-        firebase_auth_domain: '',
-        firebase_app_id: '',
-        telegram_bot_token: '',
-        telegram_chat_id: '',
-        rapidapi_key: '',
-        gemini_api_key: '',
-        openai_api_key: '',
-        system_live: true
-      };
-      
-      const rKey = localStorage.getItem('rapidapi_key');
-      const gKey = localStorage.getItem('gemini_api_key');
-      const oKey = localStorage.getItem('openai_api_key');
-      const sLive = localStorage.getItem('system_live');
-      
-      if (rKey) config.rapidapi_key = rKey;
-      if (gKey) config.gemini_api_key = gKey;
-      if (oKey) config.openai_api_key = oKey;
-      if (sLive !== null) config.system_live = sLive === 'true';
-      
-      return config;
-    } catch (e) {
-      console.error('Failed to initialize system config from localStorage:', e);
-      return {
-        firebase_project_id: '',
-        firebase_api_key: '',
-        firebase_auth_domain: '',
-        firebase_app_id: '',
-        telegram_bot_token: '',
-        telegram_chat_id: '',
-        rapidapi_key: '',
-        gemini_api_key: '',
-        openai_api_key: ''
-      };
-    }
+  const [systemConfig, setSystemConfig] = useState<SystemConfig>({
+    firebase_project_id: '',
+    firebase_api_key: '',
+    firebase_auth_domain: '',
+    firebase_app_id: '',
+    telegram_bot_token: '',
+    telegram_chat_id: ''
+  });
+  const [globalSettings, setGlobalSettings] = useState<GlobalSettings>({
+    allow_admin_keys: false,
+    total_generations: 0,
+    api_keys: ['']
   });
   const [isSavingSystem, setIsSavingSystem] = useState(false);
+  const [isSavingKeys, setIsSavingKeys] = useState(false);
   const [isSystemLoading, setIsSystemLoading] = useState(true);
   const [showSecrets, setShowSecrets] = useState(false);
-  const [showRapidKey, setShowRapidKey] = useState(false);
-  const [showGeminiKey, setShowGeminiKey] = useState(false);
-  const [showOpenAIKey, setShowOpenAIKey] = useState(false);
 
   // Pronunciation Rules State
   const [rules, setRules] = useState<PronunciationRule[]>([]);
@@ -118,95 +241,173 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
   const [isDeletingRule, setIsDeletingRule] = useState<string | null>(null);
   const [isRulesLoading, setIsRulesLoading] = useState(true);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [isSessionSynced, setIsSessionSynced] = useState(false);
+
+  // Modal State
+  const [modal, setModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: ModalType;
+    confirmText?: string;
+    cancelText?: string;
+    placeholder?: string;
+    defaultValue?: string;
+    inputType?: 'text' | 'password' | 'date';
+    onConfirm?: (value?: string) => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'alert',
+  });
+
+  const openModal = (config: Partial<Omit<typeof modal, 'isOpen'>> & { title: string; message: string }) => {
+    setModal({
+      isOpen: true,
+      title: config.title,
+      message: config.message,
+      type: config.type || 'alert',
+      confirmText: config.confirmText || 'Confirm',
+      cancelText: config.cancelText || 'Cancel',
+      placeholder: config.placeholder || 'Enter value...',
+      defaultValue: config.defaultValue || '',
+      inputType: config.inputType || 'text',
+      onConfirm: config.onConfirm,
+    });
+  };
 
   useEffect(() => {
-    // Authentication is now handled by the parent App component
-    // This component is only rendered if the user is authenticated as admin
-  }, []);
+    const savedAdminAuth = localStorage.getItem('vbs_admin_auth');
+    if (savedAdminAuth === 'saw_vlogs_2026') {
+      setIsAuthenticated(true);
+      
+      // Ensure session is synced on mount if already authenticated
+      if (isAuthReady && auth.currentUser) {
+        setDoc(doc(db, 'sessions', auth.currentUser.uid), {
+          accessCode: 'saw_vlogs_2026',
+          createdAt: new Date().toISOString()
+        })
+        .then(() => {
+          setIsSessionSynced(true);
+          if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
+        })
+        .catch(err => {
+          console.error('Failed to sync admin session on mount:', err);
+          // Still set synced if it's a permission error on the session itself (unlikely)
+          // but we want to try listing anyway if we think we are admin
+          setIsSessionSynced(true); 
+          if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
+        });
+      } else if (isAuthReady) {
+        setIsSessionSynced(true);
+        if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
+      }
+    }
+  }, [isAuthReady]);
 
   const formatDate = (date: any) => {
-    if (!date) return 'မရှိပါ';
+    if (!date) return 'N/A';
     try {
       if (date && typeof date === 'object' && 'toDate' in date) {
-        return date.toDate().toLocaleString('my-MM');
+        return date.toDate().toLocaleString();
       }
-      return new Date(date).toLocaleString('my-MM');
+      return new Date(date).toLocaleString();
     } catch (e) {
-      return 'မှားယွင်းသော ရက်စွဲ';
+      return 'Invalid Date';
     }
   };
 
-
-  useEffect(() => {
-    // Load from localStorage
-    const loadLocalData = () => {
-      try {
-        const savedAuth = localStorage.getItem('vbs_authorized_users');
-        if (savedAuth) {
-          setAuthorizedUsers(JSON.parse(savedAuth));
+  const handleAdminAuth = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setAuthError(null);
+    
+    if (adminIdInput === 'saw_vlogs_2026') {
+      setIsAuthenticated(true);
+      localStorage.setItem('vbs_admin_auth', 'saw_vlogs_2026');
+      localStorage.setItem('vbs_access_granted', 'true');
+      localStorage.setItem('vbs_access_code', 'saw_vlogs_2026');
+      
+      // Sync session for security rules
+      if (auth.currentUser) {
+        try {
+          await setDoc(doc(db, 'sessions', auth.currentUser.uid), {
+            accessCode: 'saw_vlogs_2026',
+            createdAt: new Date().toISOString()
+          });
+          console.log('Admin session synced successfully.');
+          setIsSessionSynced(true);
+          if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
+        } catch (e) {
+          console.error('Failed to sync admin session:', e);
+          setIsSessionSynced(true); // Proceed anyway
+          if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
         }
-        
-        const savedReg = localStorage.getItem('vbs_registered_users');
-        if (savedReg) {
-          setRegisteredUsers(JSON.parse(savedReg));
-        }
-        
-        const savedRules = localStorage.getItem('vbs_global_rules');
-        if (savedRules) {
-          setRules(JSON.parse(savedRules));
-        }
-      } catch (e) {
-        console.error('Failed to load local data:', e);
-      } finally {
-        setIsLoading(false);
-        setIsUsersLoading(false);
+      } else {
+        setIsSessionSynced(true);
+        if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
       }
-    };
+      
+      setToast({
+        message: 'Admin Access Granted! 🛡️',
+        type: 'success',
+        isVisible: true
+      });
+    } else {
+      setAuthError("Unauthorized Access: Admin Only");
+      setToast({
+        message: 'Unauthorized Access: Admin Only',
+        type: 'error',
+        isVisible: true
+      });
+    }
+  };
 
-    loadLocalData();
-  }, []);
+  const handleAdminLogout = () => {
+    setIsAuthenticated(false);
+    localStorage.removeItem('vbs_admin_auth');
+  };
 
   useEffect(() => {
-    if (!isAuthReady || !isSessionSynced) return;
+    if (!isAuthenticated || !isAuthReady || !isSessionSynced) return;
 
-    // Listen for Access Codes (authorized_users)
-    const qAuth = query(collection(db, 'authorized_users'), orderBy('createdAt', 'desc'));
-    const unsubscribeAuth = onSnapshot(qAuth, (snapshot) => {
+    const q = query(collection(db, 'vlogs_users'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
       const users = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       } as AuthorizedUser));
       setAuthorizedUsers(users);
-      localStorage.setItem('vbs_authorized_users', JSON.stringify(users));
       setIsLoading(false);
     }, (err) => {
-      console.error('Failed to load authorized users (Silent Fallback):', err);
       setIsLoading(false);
+      handleFirestoreError(err, OperationType.LIST, 'vlogs_users');
     });
 
-    // Listen for Registered Users (users) - This might fail if not admin in Firestore
-    const qReg = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
-    const unsubscribeReg = onSnapshot(qReg, (snapshot) => {
+    return () => unsubscribe();
+  }, [isAuthenticated, isAuthReady, isSessionSynced]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !isAuthReady || !isSessionSynced) return;
+
+    const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
       const users = snapshot.docs.map(doc => ({
         uid: doc.id,
         ...doc.data()
       } as RegisteredUser));
       setRegisteredUsers(users);
-      localStorage.setItem('vbs_registered_users', JSON.stringify(users));
       setIsUsersLoading(false);
     }, (err) => {
-      console.error('Failed to load registered users (Silent Fallback):', err);
       setIsUsersLoading(false);
+      handleFirestoreError(err, OperationType.LIST, 'users');
     });
 
-    return () => {
-      unsubscribeAuth();
-      unsubscribeReg();
-    };
-  }, [isAuthReady, isSessionSynced]);
+    return () => unsubscribe();
+  }, [isAuthenticated, isAuthReady, isSessionSynced]);
 
   useEffect(() => {
-    if (!isAuthReady) return;
+    if (!isAuthenticated || !isAuthReady || !isSessionSynced) return;
 
     const unsubscribe = onSnapshot(collection(db, 'globalRules'), (snapshot) => {
       const fetchedRules = snapshot.docs.map(doc => ({
@@ -214,7 +415,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
         ...doc.data()
       })) as PronunciationRule[];
       setRules(fetchedRules);
-      localStorage.setItem('vbs_global_rules', JSON.stringify(fetchedRules));
       setIsRulesLoading(false);
     }, (err) => {
       handleFirestoreError(err, OperationType.LIST, 'globalRules');
@@ -222,7 +422,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
     });
 
     return () => unsubscribe();
-  }, [isAuthReady]);
+  }, [isAuthenticated, isAuthReady, isSessionSynced]);
 
   const handleCreateRule = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -235,26 +435,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
           original: newRuleOriginal.trim(),
           replacement: newRuleReplacement.trim()
         });
-        setToast({ message: 'စည်းမျဉ်းကို ပြင်ဆင်ပြီးပါပြီ!', type: 'success', isVisible: true });
-    } else {
-      const ruleId = `rule_${Date.now()}`;
-      await setDoc(doc(db, 'globalRules', ruleId), {
-        original: newRuleOriginal.trim(),
-        replacement: newRuleReplacement.trim(),
-        createdAt: new Date().toISOString()
-      });
-      setToast({ message: 'စည်းမျဉ်းအသစ် ထည့်သွင်းပြီးပါပြီ!', type: 'success', isVisible: true });
+        setToast({ message: 'Rule updated successfully!', type: 'success', isVisible: true });
+      } else {
+        const ruleId = `rule_${Date.now()}`;
+        await setDoc(doc(db, 'globalRules', ruleId), {
+          original: newRuleOriginal.trim(),
+          replacement: newRuleReplacement.trim(),
+          createdAt: new Date().toISOString()
+        });
+        setToast({ message: 'Rule added successfully!', type: 'success', isVisible: true });
+      }
+      setNewRuleOriginal('');
+      setNewRuleReplacement('');
+      setEditingRuleId(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, editingRuleId ? `globalRules/${editingRuleId}` : 'globalRules');
+      setToast({ message: editingRuleId ? 'Failed to update rule' : 'Failed to add rule', type: 'error', isVisible: true });
+    } finally {
+      setIsSavingRule(false);
     }
-    setNewRuleOriginal('');
-    setNewRuleReplacement('');
-    setEditingRuleId(null);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, editingRuleId ? `globalRules/${editingRuleId}` : 'globalRules');
-    setToast({ message: editingRuleId ? 'စည်းမျဉ်း ပြင်ဆင်ရန် မအောင်မြင်ပါ။' : 'စည်းမျဉ်းအသစ် ထည့်ရန် မအောင်မြင်ပါ။', type: 'error', isVisible: true });
-  } finally {
-    setIsSavingRule(false);
-  }
-};
+  };
 
   const handleEditRule = (rule: PronunciationRule) => {
     setNewRuleOriginal(rule.original);
@@ -271,99 +471,127 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
   };
 
   const handleDeleteRule = async (id: string) => {
-    if (!window.confirm('ဤစည်းမျဉ်းကို ဖျက်ရန် သေချာပါသလား?')) return;
-    setIsDeletingRule(id);
-    try {
-      await deleteDoc(doc(db, 'globalRules', id));
-      setToast({ message: 'စည်းမျဉ်းကို ဖျက်လိုက်ပါပြီ', type: 'success', isVisible: true });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `globalRules/${id}`);
-      setToast({ message: 'စည်းမျဉ်း ဖျက်ရန် မအောင်မြင်ပါ။', type: 'error', isVisible: true });
-    } finally {
-      setIsDeletingRule(null);
-    }
+    openModal({
+      title: 'Delete Rule',
+      message: 'Are you sure you want to delete this pronunciation rule?',
+      type: 'confirm',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setIsDeletingRule(id);
+        try {
+          await deleteDoc(doc(db, 'globalRules', id));
+          setToast({ message: 'Rule deleted', type: 'success', isVisible: true });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, `globalRules/${id}`);
+          setToast({ message: 'Failed to delete rule', type: 'error', isVisible: true });
+        } finally {
+          setIsDeletingRule(null);
+        }
+      }
+    });
   };
 
   useEffect(() => {
-    const loadSystemConfig = () => {
+    if (!isAuthenticated || !isAuthReady) return;
+
+    const fetchSystemConfig = async () => {
       setIsSystemLoading(true);
       try {
-        const saved = localStorage.getItem('vbs_system_config');
-        let config: SystemConfig = saved ? JSON.parse(saved) : {
-          firebase_project_id: '',
-          firebase_api_key: '',
-          firebase_auth_domain: '',
-          firebase_app_id: '',
-          telegram_bot_token: '',
-          telegram_chat_id: '',
-          rapidapi_key: '',
-          gemini_api_key: '',
-          openai_api_key: '',
-          system_live: true
-        };
-        
-        // Individual overrides if they exist (User preference for individual persistence)
-        const rKey = localStorage.getItem('rapidapi_key');
-        const gKey = localStorage.getItem('gemini_api_key');
-        const oKey = localStorage.getItem('openai_api_key');
-        const sLive = localStorage.getItem('system_live');
-        
-        if (rKey) config.rapidapi_key = rKey;
-        if (gKey) config.gemini_api_key = gKey;
-        if (oKey) config.openai_api_key = oKey;
-        if (sLive !== null) config.system_live = sLive === 'true';
-        
-        setSystemConfig(config);
+        const docRef = doc(db, 'system_config', 'main');
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setSystemConfig(docSnap.data() as SystemConfig);
+        }
+
+        const globalRef = doc(db, 'settings', 'global');
+        const globalSnap = await getDoc(globalRef);
+        if (globalSnap.exists()) {
+          const data = globalSnap.data() as GlobalSettings;
+          setGlobalSettings({
+            ...data,
+            api_keys: data.api_keys || ['']
+          });
+        }
       } catch (err) {
-        console.error('Failed to load system config from localStorage:', err);
+        console.error('Failed to fetch system config:', err);
       } finally {
         setIsSystemLoading(false);
       }
     };
 
-    loadSystemConfig();
-  }, []);
+    fetchSystemConfig();
+  }, [isAuthenticated, isAuthReady]);
 
-  const handleSaveSystemConfig = async () => {
+  const handleSaveSystemConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
     setIsSavingSystem(true);
-    
     try {
-      // Simulate network delay for visual feedback as requested
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // Save directly to localStorage for immediate effect
+      await setDoc(doc(db, 'system_config', 'main'), {
+        ...systemConfig,
+        updatedAt: new Date().toISOString()
+      });
+      
+      // Save to localStorage for immediate effect on next reload
       localStorage.setItem('vbs_system_config', JSON.stringify(systemConfig));
       
-      // Save individual keys as requested
-      localStorage.setItem('rapidapi_key', systemConfig.rapidapi_key || '');
-      localStorage.setItem('gemini_api_key', systemConfig.gemini_api_key || '');
-      localStorage.setItem('openai_api_key', systemConfig.openai_api_key || '');
-      localStorage.setItem('system_live', String(systemConfig.system_live ?? true));
-      
-      if (onConfigUpdate) {
-        onConfigUpdate(systemConfig);
-      }
-      
       setToast({
-        message: 'ပြင်ဆင်ချက်များကို အောင်မြင်စွာ သိမ်းဆည်းပြီးပါပြီ။',
+        message: 'System Settings Saved Successfully! 🚀',
         type: 'success',
         isVisible: true
       });
-      
-      // Auto-hide toast
-      setTimeout(() => {
-        setToast(prev => ({ ...prev, isVisible: false }));
-      }, 3000);
     } catch (err) {
-      console.error('Failed to save system settings locally:', err);
+      handleFirestoreError(err, OperationType.WRITE, 'system_config/main');
       setToast({
-        message: 'ပြင်ဆင်ချက်များကို သိမ်းဆည်းရန် မအောင်မြင်ပါ။',
+        message: 'Failed to save system settings.',
         type: 'error',
         isVisible: true
       });
     } finally {
       setIsSavingSystem(false);
     }
+  };
+
+  const handleSaveGlobalSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingKeys(true);
+    
+    // Sync api_keys array with individual keys for backward compatibility
+    const keys = [
+      globalSettings.primary_key || '',
+      globalSettings.secondary_key || '',
+      globalSettings.backup_key || ''
+    ].filter(k => k.trim());
+
+    try {
+      await setDoc(doc(db, 'settings', 'global'), {
+        ...globalSettings,
+        api_keys: keys,
+        updatedAt: new Date().toISOString()
+      });
+      setToast({
+        message: 'API Key Settings Saved! 🔑',
+        type: 'success',
+        isVisible: true
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/global');
+      setToast({
+        message: 'Failed to save API key settings.',
+        type: 'error',
+        isVisible: true
+      });
+    } finally {
+      setIsSavingKeys(false);
+    }
+  };
+
+  const generateRandomPassword = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+    let password = '';
+    for (let i = 0; i < 12; i++) {
+      password += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setNewPassword(password);
   };
 
   const handleCreateId = async (e: React.FormEvent) => {
@@ -374,85 +602,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
 
     try {
       const accessCode = newId.trim();
-      
-      if (editingUserId) {
-        // Update existing user
-        const updatedUsers = authorizedUsers.map(u => 
-          u.id === editingUserId ? { 
-            ...u, 
-            id: accessCode, // Allow ID change if needed, though usually ID is the key
-            note: newNote.trim(),
-            role: newRole,
-            expiryDate: newExpiryDate || undefined
-          } : u
-        );
-        
-        localStorage.setItem('vbs_authorized_users', JSON.stringify(updatedUsers));
-        setAuthorizedUsers(updatedUsers as AuthorizedUser[]);
-        
-        // Sync to Firestore
-        try {
-          // If ID changed, we need to delete old and create new, or just update if ID same
-          if (editingUserId !== accessCode) {
-            await deleteDoc(doc(db, 'authorized_users', editingUserId));
-            const updatedUser = updatedUsers.find(u => u.id === accessCode);
-            if (updatedUser) {
-              await setDoc(doc(db, 'authorized_users', accessCode), updatedUser);
-            }
-          } else {
-            await updateDoc(doc(db, 'authorized_users', accessCode), {
-              note: newNote.trim(),
-              role: newRole,
-              expiryDate: newExpiryDate || undefined
-            });
-          }
-        } catch (fsErr) {
-          console.warn('Firestore sync failed, but local save succeeded:', fsErr);
-        }
-        
-        setToast({
-          message: 'သက်တမ်းတိုးခြင်း အောင်မြင်ပါသည်။ ✨',
-          type: 'success',
-          isVisible: true
-        });
-        setEditingUserId(null);
-      } else {
-        // Create new user
-        const newAuthorizedUser: AuthorizedUser = {
-          id: accessCode,
-          isActive: true,
-          createdAt: new Date().toISOString(),
-          note: newNote.trim(),
-          role: newRole,
-          expiryDate: newExpiryDate || undefined
-        };
+      const newAuthorizedUser = {
+        id: accessCode, // Include id
+        userId: accessCode, // Explicitly set userId as requested
+        isActive: true,
+        createdAt: new Date().toISOString(),
+        note: newNote.trim(),
+        role: newRole,
+        password: newPassword.trim() || null,
+        expiryDate: newExpiryDate || null
+      };
 
-        // Update LocalStorage
-        const updatedUsers = [newAuthorizedUser, ...authorizedUsers];
-        localStorage.setItem('vbs_authorized_users', JSON.stringify(updatedUsers));
-        setAuthorizedUsers(updatedUsers as AuthorizedUser[]);
-        
-        // Also sync to Firestore
-        try {
-          await setDoc(doc(db, 'authorized_users', accessCode), newAuthorizedUser);
-        } catch (fsErr) {
-          console.warn('Firestore sync failed, but local save succeeded:', fsErr);
-        }
-        
-        setToast({
-          message: 'အသုံးပြုသူ ID အသစ် ဖန်တီးပြီးပါပြီ! 🎉',
-          type: 'success',
-          isVisible: true
-        });
-      }
+      await setDoc(doc(db, 'vlogs_users', accessCode), newAuthorizedUser);
+      
+      // Also initialize user_controls to sync expiry and initial settings
+      await setDoc(doc(db, 'user_controls', accessCode), {
+        vbsId: accessCode,
+        dailyUsage: 0,
+        lastUsedDate: new Date().toDateString(),
+        isUnlimited: newRole === 'admin',
+        membershipStatus: newRole === 'admin' ? 'premium' : 'standard',
+        isBlocked: false,
+        expiryDate: newExpiryDate || null,
+        updatedAt: new Date()
+      });
       
       setNewId('');
       setNewNote('');
+      setNewPassword('');
       setNewExpiryDate('');
       setNewRole('user');
-    } catch (err: any) {
       setToast({
-        message: editingUserId ? 'ပြင်ဆင်ရန် မအောင်မြင်ပါ။' : 'အမှားအယွင်းရှိပါသည် - ID ဖန်တီး၍မရပါ။',
+        message: 'User ID Created Successfully! 🎉',
+        type: 'success',
+        isVisible: true
+      });
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.CREATE, `vlogs_users/${newId.trim()}`);
+      setToast({
+        message: 'Error: Could not create ID. Please try again.',
         type: 'error',
         isVisible: true
       });
@@ -461,59 +649,146 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
     }
   };
 
-  const handleEditId = (user: AuthorizedUser) => {
-    setEditingUserId(user.id);
-    setNewId(user.id);
-    setNewNote(user.note || '');
-    setNewRole(user.role || 'user');
-    
-    // Format date for input[type="date"]
-    if (user.expiryDate) {
-      const date = new Date(user.expiryDate);
-      const formattedDate = date.toISOString().split('T')[0];
-      setNewExpiryDate(formattedDate);
-    } else {
-      setNewExpiryDate('');
-    }
-    
-    // Scroll to top of form
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleCancelEdit = () => {
-    setEditingUserId(null);
-    setNewId('');
-    setNewNote('');
-    setNewExpiryDate('');
-    setNewRole('user');
-  };
-
-  const handleToggleStatus = async (id: string, currentStatus: boolean) => {
-    try {
-      // Update LocalStorage
-      const updatedUsers = authorizedUsers.map(u => 
-        u.id === id ? { ...u, isActive: !currentStatus } : u
-      );
-      localStorage.setItem('vbs_authorized_users', JSON.stringify(updatedUsers));
-      setAuthorizedUsers(updatedUsers as AuthorizedUser[]);
-
-      // Also sync to Firestore
-      try {
-        await updateDoc(doc(db, 'authorized_users', id), {
-          isActive: !currentStatus
-        });
-      } catch (fsErr) {
-        console.warn('Firestore update failed, but local update succeeded:', fsErr);
+  const handleUpdatePassword = async (id: string) => {
+    const user = authorizedUsers.find(u => u.id === id);
+    openModal({
+      title: 'Update Password',
+      message: 'Enter a new password for this user:',
+      type: 'prompt',
+      inputType: 'text',
+      defaultValue: user?.password || '',
+      placeholder: 'New password...',
+      confirmText: 'Update',
+      onConfirm: async (password) => {
+        if (!password) return;
+        try {
+          await updateDoc(doc(db, 'vlogs_users', id), {
+            password: password.trim() || null
+          });
+          setToast({
+            message: 'Password Updated ✨',
+            type: 'success',
+            isVisible: true
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
+          setToast({
+            message: 'Failed to update user password.',
+            type: 'error',
+            isVisible: true
+          });
+        }
       }
+    });
+  };
 
+  const handleExtendExpiry = async (id: string, currentExpiry: string | undefined) => {
+    try {
+      const now = new Date();
+      let baseDate = now;
+      
+      if (currentExpiry) {
+        const current = new Date(currentExpiry);
+        if (current > now) {
+          baseDate = current;
+        }
+      }
+      
+      const newExpiry = new Date(baseDate);
+      newExpiry.setDate(newExpiry.getDate() + 30);
+      const isoExpiry = newExpiry.toISOString();
+      
+      await updateDoc(doc(db, 'vlogs_users', id), {
+        expiryDate: isoExpiry
+      });
+
+      // Sync to user_controls
+      await setDoc(doc(db, 'user_controls', id), {
+        expiryDate: isoExpiry,
+        vbsId: id,
+        updatedAt: new Date()
+      }, { merge: true });
+      
       setToast({
-        message: 'အသုံးပြုသူ အခြေအနေကို ပြောင်းလဲလိုက်ပါပြီ!',
+        message: 'Subscription Extended 30 Days! 📅',
         type: 'success',
         isVisible: true
       });
     } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
       setToast({
-        message: 'အသုံးပြုသူ အခြေအနေ ပြောင်းလဲရန် မအောင်မြင်ပါ။',
+        message: 'Failed to extend subscription.',
+        type: 'error',
+        isVisible: true
+      });
+    }
+  };
+
+  const handleSetCustomExpiry = async (id: string) => {
+    openModal({
+      title: 'Set Expiry Date',
+      message: 'Enter custom expiry date (YYYY-MM-DD):',
+      type: 'prompt',
+      inputType: 'date',
+      confirmText: 'Set Expiry',
+      onConfirm: async (dateStr) => {
+        if (!dateStr) return;
+        
+        try {
+          const date = new Date(dateStr);
+          if (isNaN(date.getTime())) {
+            openModal({
+              title: 'Invalid Date',
+              message: 'Invalid date format. Please use YYYY-MM-DD.',
+              type: 'error'
+            });
+            return;
+          }
+          
+          const isoExpiry = date.toISOString();
+
+          await updateDoc(doc(db, 'vlogs_users', id), {
+            expiryDate: isoExpiry
+          });
+
+          // Sync to user_controls
+          await setDoc(doc(db, 'user_controls', id), {
+            expiryDate: isoExpiry,
+            vbsId: id,
+            updatedAt: new Date()
+          }, { merge: true });
+          
+          setToast({
+            message: 'Custom Expiry Date Set! 📅',
+            type: 'success',
+            isVisible: true
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
+          setToast({
+            message: 'Failed to set custom expiry date.',
+            type: 'error',
+            isVisible: true
+          });
+        }
+      }
+    });
+  };
+
+  const handleToggleStatus = async (id: string, currentStatus: boolean) => {
+    try {
+      await updateDoc(doc(db, 'vlogs_users', id), {
+        isActive: !currentStatus
+      });
+      setToast({
+        message: 'User Status Updated!',
+        type: 'success',
+        isVisible: true
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
+      setToast({
+        message: 'Failed to update user status.',
         type: 'error',
         isVisible: true
       });
@@ -522,32 +797,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
 
   const handleToggleRole = async (id: string, currentRole: 'admin' | 'user') => {
     try {
-      const nextRole = currentRole === 'admin' ? 'user' : 'admin';
-      
-      // Update LocalStorage
-      const updatedUsers = authorizedUsers.map(u => 
-        u.id === id ? { ...u, role: nextRole } : u
-      );
-      localStorage.setItem('vbs_authorized_users', JSON.stringify(updatedUsers));
-      setAuthorizedUsers(updatedUsers as AuthorizedUser[]);
-
-      // Also sync to Firestore
-      try {
-        await updateDoc(doc(db, 'authorized_users', id), {
-          role: nextRole
-        });
-      } catch (fsErr) {
-        console.warn('Firestore update failed, but local update succeeded:', fsErr);
-      }
-
+      await updateDoc(doc(db, 'vlogs_users', id), {
+        role: currentRole === 'admin' ? 'user' : 'admin'
+      });
       setToast({
-        message: 'အသုံးပြုသူ အဆင့်ကို ပြောင်းလဲလိုက်ပါပြီ!',
+        message: 'User Role Updated!',
         type: 'success',
         isVisible: true
       });
     } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
       setToast({
-        message: 'အသုံးပြုသူ အဆင့် ပြောင်းလဲရန် မအောင်မြင်ပါ။',
+        message: 'Failed to update user role.',
         type: 'error',
         isVisible: true
       });
@@ -555,36 +816,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
   };
 
   const handleDeleteId = async (id: string) => {
-    if (!window.confirm(`Access Code: ${id} ကို ဖျက်ရန် သေချာပါသလား?`)) return;
-
-    setIsDeletingUser(id);
-    try {
-      // Update LocalStorage
-      const updatedUsers = authorizedUsers.filter(u => u.id !== id);
-      localStorage.setItem('vbs_authorized_users', JSON.stringify(updatedUsers));
-      setAuthorizedUsers(updatedUsers as AuthorizedUser[]);
-
-      // Also sync to Firestore
-      try {
-        await deleteDoc(doc(db, 'authorized_users', id));
-      } catch (fsErr) {
-        console.warn('Firestore delete failed, but local delete succeeded:', fsErr);
+    openModal({
+      title: 'Delete User ID',
+      message: `Are you sure you want to delete Access Code: ${id}?`,
+      type: 'confirm',
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        setIsDeletingUser(id);
+        try {
+          await deleteDoc(doc(db, 'vlogs_users', id));
+          setToast({
+            message: 'User ID Deleted Successfully!',
+            type: 'success',
+            isVisible: true
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, `vlogs_users/${id}`);
+          setToast({
+            message: 'Failed to delete User ID.',
+            type: 'error',
+            isVisible: true
+          });
+        } finally {
+          setIsDeletingUser(null);
+        }
       }
-
-      setToast({
-        message: 'အသုံးပြုသူ ID ကို ဖျက်လိုက်ပါပြီ! 🎉',
-        type: 'success',
-        isVisible: true
-      });
-    } catch (err) {
-      setToast({
-        message: 'အသုံးပြုသူ ID ဖျက်ရန် မအောင်မြင်ပါ။',
-        type: 'error',
-        isVisible: true
-      });
-    } finally {
-      setIsDeletingUser(null);
-    }
+    });
   };
 
   const handleVerifyUser = async (uid: string) => {
@@ -595,14 +852,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
         pending_verification: false
       });
       setToast({
-        message: 'အသုံးပြုသူကို အတည်ပြုပြီးပါပြီ! 🎉',
+        message: 'User Verified Successfully! 🎉',
         type: 'success',
         isVisible: true
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
       setToast({
-        message: 'အသုံးပြုသူ အတည်ပြုရန် မအောင်မြင်ပါ။',
+        message: 'Failed to verify user.',
         type: 'error',
         isVisible: true
       });
@@ -617,14 +874,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
         role: currentRole === 'admin' ? 'user' : 'admin'
       });
       setToast({
-        message: `အသုံးပြုသူအဆင့်ကို ${currentRole === 'admin' ? 'အသုံးပြုသူ' : 'အက်ဒမင်'}သို့ ပြောင်းလဲလိုက်ပါပြီ! 🎉`,
+        message: `User role updated to ${currentRole === 'admin' ? 'user' : 'admin'}! 🎉`,
         type: 'success',
         isVisible: true
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
       setToast({
-        message: 'အသုံးပြုသူအဆင့် ပြောင်းလဲရန် မအောင်မြင်ပါ။',
+        message: 'Failed to update user role.',
         type: 'error',
         isVisible: true
       });
@@ -636,162 +893,249 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
     (u.note || '').toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  if (!isAuthenticated) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 px-4">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="w-full max-w-md bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 shadow-2xl transition-colors duration-300"
+        >
+          <div className="flex flex-col items-center mb-8">
+            <div className="w-16 h-16 bg-brand-purple/20 text-brand-purple rounded-2xl flex items-center justify-center mb-4 border border-brand-purple/20">
+              <Lock size={32} />
+            </div>
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-white">{t('admin.authTitle')}</h2>
+            <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">{t('admin.authSubtitle')}</p>
+          </div>
 
+          <form onSubmit={handleAdminAuth} className="space-y-6">
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">{t('admin.roleLabel')}</label>
+              <div className="relative">
+                <Shield className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={20} />
+                <input
+                  type="password"
+                  value={adminIdInput}
+                  onChange={(e) => setAdminIdInput(e.target.value)}
+                  placeholder={t('admin.enterCode')}
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-4 text-sm text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                  required
+                />
+              </div>
+            </div>
+
+            {authError && (
+              <p className="text-red-500 text-xs font-bold flex items-center gap-1 px-2">
+                <AlertCircle size={12} /> {authError}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              className="w-full py-4 bg-brand-purple text-white rounded-2xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2"
+            >
+              <ShieldCheck size={20} /> {t('admin.unlockBtn')}
+            </button>
+          </form>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <>
-      <div className="max-w-6xl mx-auto space-y-8 p-4">
+      <div className="max-w-6xl mx-auto space-y-8 p-4 relative">
+      <div className="absolute top-0 right-0 w-64 h-64 bg-brand-purple/5 blur-[100px] -z-10" />
+      
       {/* Header */}
-      <div className="bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-8 shadow-2xl transition-colors duration-300">
+      <div className="premium-glass rounded-[32px] p-5 sm:p-8 shadow-2xl transition-all duration-300 neon-glow-indigo">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-6 text-center sm:text-left">
           <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-6">
-            <div className="w-14 h-14 sm:w-16 sm:h-16 bg-brand-purple/20 text-brand-purple rounded-2xl flex items-center justify-center shadow-[0_0_15px_rgba(168,85,247,0.3)] border border-brand-purple/20 shrink-0">
-              <Shield size={28} className="sm:w-8 sm:h-8" />
+            <div className="w-14 h-14 sm:w-16 sm:h-16 bg-brand-purple/20 text-brand-purple rounded-2xl flex items-center justify-center shadow-inner border border-brand-purple/20 shrink-0">
+              <ShieldCheck size={28} className="sm:w-8 sm:h-8" />
             </div>
             <div>
-              <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white font-mono tracking-tighter uppercase">ထိန်းချုပ်ရေးဗဟို</h2>
-              <p className="text-slate-500 dark:text-slate-400 text-[10px] sm:text-xs mt-1 font-mono uppercase tracking-widest">စနစ်စီမံခန့်ခွဲမှုဌာန</p>
+              <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">{t('admin.title')}</h2>
+              <p className="text-slate-500 dark:text-slate-400 text-xs sm:text-sm mt-1">{t('admin.subtitle') || t('admin.idSettings')}</p>
             </div>
           </div>
-          <div className="flex items-center gap-3 w-full sm:w-auto">
-            <div className="flex bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800">
-              <button
-                onClick={() => setActiveTab('users')}
-                className={`px-4 py-2 rounded-lg text-[10px] font-bold transition-all flex items-center gap-2 font-mono uppercase tracking-wider ${activeTab === 'users' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-              >
-                <User size={14} /> အသုံးပြုသူများ
-              </button>
-              <button
-                onClick={() => setActiveTab('system')}
-                className={`px-4 py-2 rounded-lg text-[10px] font-bold transition-all flex items-center gap-2 font-mono uppercase tracking-wider ${activeTab === 'system' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-              >
-                <Settings size={14} /> စနစ်ပြင်ဆင်ချက်
-              </button>
-              <button
-                onClick={() => setActiveTab('rules')}
-                className={`px-4 py-2 rounded-lg text-[10px] font-bold transition-all flex items-center gap-2 font-mono uppercase tracking-wider ${activeTab === 'rules' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-[0_0_10px_rgba(168,85,247,0.2)]' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-              >
-                <Languages size={14} /> စည်းမျဉ်းများ
-              </button>
-            </div>
+          <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto overflow-hidden">
+            {!configOnly && (
+              <div className="flex flex-nowrap overflow-x-auto no-scrollbar bg-slate-100 dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200 dark:border-slate-800 flex-1 sm:flex-initial">
+                <button
+                  onClick={() => {
+                    window.history.pushState({}, '', '/');
+                    window.dispatchEvent(new Event('popstate'));
+                  }}
+                  className="px-3 sm:px-4 py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 whitespace-nowrap"
+                >
+                  <Mic2 size={14} /> {t('nav.studio')}
+                </button>
+                <button
+                  onClick={() => setActiveTab('users')}
+                  className={`px-3 sm:px-4 py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 whitespace-nowrap ${activeTab === 'users' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  <User size={14} /> {t('admin.userManagement')}
+                </button>
+                <button
+                  onClick={() => setActiveTab('system')}
+                  className={`px-3 sm:px-4 py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 whitespace-nowrap ${activeTab === 'system' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  <Settings size={14} /> {t('admin.systemSettings')}
+                </button>
+                <button
+                  onClick={() => setActiveTab('rules')}
+                  className={`px-3 sm:px-4 py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 whitespace-nowrap ${activeTab === 'rules' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  <Languages size={14} /> {t('admin.pronunciationRules')}
+                </button>
+              </div>
+            )}
             <button 
-              onClick={onLogout}
-              className="px-4 py-2.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-xl text-red-500 text-[10px] font-bold transition-all flex items-center gap-2 font-mono uppercase tracking-widest hover:shadow-[0_0_15px_rgba(239,68,68,0.2)]"
+              onClick={handleAdminLogout}
+              className="px-3 sm:px-4 py-2 sm:py-2.5 bg-slate-100 dark:bg-slate-900/50 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 dark:text-slate-400 text-[10px] sm:text-sm font-bold transition-all whitespace-nowrap"
             >
-              <LogOut size={16} /> ထွက်ရန်
+              {configOnly ? 'Exit Config' : 'Lock'}
             </button>
           </div>
         </div>
       </div>
 
-      {activeTab === 'users' && (
+      {activeTab === 'users' && !configOnly && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Create Form */}
         <div className="lg:col-span-4">
-          <div className="bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl sticky top-8 transition-colors duration-300 neon-border-purple">
+          <div className="premium-glass rounded-[32px] p-5 sm:p-6 shadow-2xl sticky top-8 transition-all duration-300 border border-white/5">
             <div className="flex items-center gap-3 mb-6">
               <UserPlus className="text-brand-purple" size={20} />
-              <h3 className="text-lg font-bold text-slate-900 dark:text-white font-mono uppercase tracking-tighter">
-                {editingUserId ? 'အသုံးပြုသူ ပြင်ဆင်ရန်' : 'အသုံးပြုသူအသစ် ထည့်ရန်'}
-              </h3>
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white">Create New User ID</h3>
             </div>
 
             <form onSubmit={handleCreateId} className="space-y-4">
               <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1 font-mono">အသုံးပြုသူ ID (Access Code)</label>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Access Code (User ID)</label>
                 <div className="relative">
                   <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                   <input
                     type="text"
                     value={newId}
                     onChange={(e) => setNewId(e.target.value)}
-                    placeholder="ဥပမာ - USER-12345"
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-3.5 text-sm text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
+                    placeholder="e.g. USER-12345"
+                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-3.5 text-sm text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
                     required
                   />
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1 font-mono">မှတ်ချက် / အမည် (မထည့်လည်းရသည်)</label>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Note / Name (Optional)</label>
                 <div className="relative">
                   <User className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                   <input
                     type="text"
                     value={newNote}
                     onChange={(e) => setNewNote(e.target.value)}
-                    placeholder="ဥပမာ - စောရန်အောင်"
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-3.5 text-sm text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
+                    placeholder="e.g. Saw Yan Aung"
+                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-3.5 text-sm text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
                   />
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1 font-mono">သက်တမ်းကုန်ဆုံးမည့်ရက် (Expiry Date)</label>
+                <div className="flex justify-between items-center px-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Password (Optional)</label>
+                  <button 
+                    type="button"
+                    onClick={generateRandomPassword}
+                    className="text-[10px] font-bold text-brand-purple hover:underline flex items-center gap-1"
+                  >
+                    <RefreshCw size={10} /> Generate
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                  <input
+                    type="text"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Enter or generate password"
+                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-3.5 text-sm font-mono text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Expiry Date (Optional)</label>
                 <div className="relative">
                   <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                   <input
                     type="date"
                     value={newExpiryDate}
                     onChange={(e) => setNewExpiryDate(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-3.5 text-sm text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
+                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-3.5 text-sm text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
                   />
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1 font-mono">အဆင့်သတ်မှတ်ချက်</label>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">{t('admin.roleLabel')}</label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => setNewRole('user')}
-                    className={`py-3 rounded-xl text-[10px] font-bold border transition-all font-mono uppercase tracking-widest ${newRole === 'user' ? 'bg-brand-purple border-brand-purple text-white shadow-[0_0_15px_rgba(168,85,247,0.3)]' : 'bg-slate-100 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
+                    className={`py-3 rounded-xl text-xs font-bold border transition-all ${newRole === 'user' ? 'bg-brand-purple border-brand-purple text-white' : 'bg-slate-100 dark:bg-slate-900/50 border-slate-200 dark:border-slate-800 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
                   >
-                    အသုံးပြုသူ
+                    {t('admin.userRole')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setNewRole('admin')}
-                    className={`py-3 rounded-xl text-[10px] font-bold border transition-all font-mono uppercase tracking-widest ${newRole === 'admin' ? 'bg-brand-purple border-brand-purple text-white shadow-[0_0_15px_rgba(168,85,247,0.3)]' : 'bg-slate-100 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
+                    className={`py-3 rounded-xl text-xs font-bold border transition-all ${newRole === 'admin' ? 'bg-brand-purple border-brand-purple text-white' : 'bg-slate-100 dark:bg-slate-900/50 border-slate-200 dark:border-slate-800 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
                   >
-                    အက်ဒမင်
+                    {t('admin.adminRole')}
                   </button>
                 </div>
               </div>
 
-              <div className="flex flex-col gap-3">
-                <button
-                  type="submit"
-                  disabled={isSubmitting || !newId.trim()}
-                  className="w-full py-4 bg-brand-purple text-white rounded-xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 font-mono uppercase tracking-widest hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] btn-pulse"
-                >
-                  {isSubmitting ? <RefreshCw size={18} className="animate-spin" /> : (editingUserId ? <Save size={18} /> : <Plus size={18} />)}
-                  {editingUserId ? 'ပြင်ဆင်ချက်များ သိမ်းမည်' : 'အသုံးပြုသူသစ် ဖန်တီးမည်'}
-                </button>
-                
-                {editingUserId && (
-                  <button
-                    type="button"
-                    onClick={handleCancelEdit}
-                    className="w-full py-3 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-all flex items-center justify-center gap-2 font-mono uppercase tracking-widest text-[10px]"
-                  >
-                    <XCircle size={14} /> မလုပ်တော့ပါ (Cancel)
-                  </button>
-                )}
-              </div>
+              <button
+                type="submit"
+                disabled={isSubmitting || !newId.trim()}
+                className="w-full py-4 bg-brand-purple text-white rounded-xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+              >
+                {isSubmitting ? (
+                  <div className="flex items-center gap-0.5 h-4">
+                    {[...Array(3)].map((_, i) => (
+                      <motion.div
+                        key={i}
+                        className="w-0.5 bg-white rounded-full"
+                        animate={{
+                          height: [4, 12, 4],
+                        }}
+                        transition={{
+                          duration: 0.6,
+                          repeat: Infinity,
+                          delay: i * 0.1,
+                        }}
+                      />
+                    ))}
+                  </div>
+                ) : <Plus size={18} />}
+                {t('admin.createBtn')}
+              </button>
             </form>
           </div>
         </div>
 
         {/* List Table */}
         <div className="lg:col-span-8">
-          <div className="bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl transition-colors duration-300">
+          <div className="premium-glass rounded-[32px] p-5 sm:p-6 shadow-2xl transition-all duration-300 border border-white/5">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
               <div className="flex items-center gap-3">
                 <Key className="text-brand-purple" size={20} />
-                <h3 className="text-lg font-bold text-slate-900 dark:text-white">လက်ရှိ အသုံးပြုသူ ID များ</h3>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">{t('admin.userList')}</h3>
                 <span className="px-2 py-0.5 bg-brand-purple/20 text-brand-purple border border-brand-purple/30 rounded-lg text-[9px] font-bold uppercase">
-                  စုစုပေါင်း {authorizedUsers.length} ခု
+                  {authorizedUsers.length} {t('admin.stats')}
                 </span>
               </div>
 
@@ -799,7 +1143,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
                 <input
                   type="text"
-                  placeholder="ID သို့မဟုတ် မှတ်ချက်ဖြင့် ရှာဖွေရန်..."
+                  placeholder={t('admin.searchIds')}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
@@ -810,18 +1154,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
             {isLoading ? (
               <div className="flex items-center justify-center py-20">
                 <div className="w-8 h-8 border-2 border-brand-purple/20 border-t-brand-purple rounded-full animate-spin" />
+                <p className="ml-3 text-xs font-bold text-slate-500 uppercase tracking-widest">{t('common.loading')}...</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-white/5">
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">ID</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">အမည်</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Role</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">ဖန်တီးသည့်ရက်</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">သက်တမ်းကုန်ရက်</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">လုပ်ဆောင်ချက် (Actions)</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.id')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.note')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.passwordLabel')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.usage')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.membership')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center">{t('admin.premiumAccess')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.expiry')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.status')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">{t('admin.actions')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-white/5">
@@ -834,50 +1182,197 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
                           <span className="text-sm text-slate-700 dark:text-slate-300">{u.note || '—'}</span>
                         </td>
                         <td className="px-4 py-4">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${u.role === 'admin' ? 'bg-brand-purple/20 text-brand-purple border-brand-purple/30' : 'bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10'}`}>
-                            {u.role === 'admin' ? 'အက်ဒမင်' : 'အသုံးပြုသူ'}
-                          </span>
+                          <div className="flex items-center gap-2 group/pass">
+                            <span className="font-mono text-xs text-slate-900 dark:text-white bg-slate-100 dark:bg-white/5 px-2 py-1 rounded border border-slate-200 dark:border-white/10 min-w-[100px] text-center">
+                              {visiblePasswords.has(u.id) ? (u.password || '—') : '••••••••'}
+                            </span>
+                            <button 
+                              onClick={() => togglePasswordVisibility(u.id)}
+                              className="p-1.5 text-slate-400 hover:text-brand-purple hover:bg-brand-purple/10 rounded transition-all"
+                              title={visiblePasswords.has(u.id) ? "Hide Password" : "Show Password"}
+                            >
+                              {visiblePasswords.has(u.id) ? <EyeOff size={14} /> : <Eye size={14} />}
+                            </button>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 whitespace-nowrap">
+                          {(() => {
+                            const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
+                            const lastLogin = userCtrl?.lastLoginAt ? new Date(userCtrl.lastLoginAt) : null;
+                            const isActiveNow = lastLogin && (new Date().getTime() - lastLogin.getTime() < 300000); // 5 mins
+                            const isToday = userCtrl?.lastUsedDate === new Date().toDateString();
+                            
+                            return (
+                              <div className="flex flex-col gap-1.5 min-w-[140px]">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-bold text-brand-purple">
+                                    {isToday ? (userCtrl.dailyTasks || 0) : 0} ယနေ့အသုံးပြုမှု
+                                  </span>
+                                  <button 
+                                    onClick={() => handleShowActivityLogs(u.id)}
+                                    className="p-1 text-slate-400 hover:text-brand-purple hover:bg-brand-purple/10 rounded transition-all"
+                                    title="View detailed logs"
+                                  >
+                                    <Eye size={12} />
+                                  </button>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {isActiveNow ? (
+                                    <span className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 text-emerald-500 rounded-full text-[9px] font-bold border border-emerald-500/20">
+                                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                                      Active Now
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap">
+                                      နောက်ဆုံးအသုံးပြုမှု: {lastLogin ? timeSince(lastLogin) + " ago" : "Never"}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-4 py-4">
-                          <div className="flex items-center gap-2 text-xs text-slate-500">
-                            <Calendar size={12} />
-                            {new Date(u.createdAt).toLocaleDateString()}
+                          {(() => {
+                            const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
+                            const isPremium = userCtrl?.membershipStatus === 'premium' || u.id === 'saw_vlogs_2026';
+                            return (
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border flex items-center gap-1.5 w-fit ${isPremium ? 'bg-amber-500/10 text-amber-500 border-amber-500/20 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10'}`}>
+                                {isPremium ? (
+                                  <>
+                                    <Sparkles size={10} className="animate-pulse" />
+                                    Premium (အဆင့်မြင့်)
+                                  </>
+                                ) : (
+                                  'Standard (သာမန်)'
+                                )}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-4 py-4">
+                          <div className="flex justify-center">
+                            {(() => {
+                              const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
+                              const isPremium = userCtrl?.membershipStatus === 'premium';
+                              const isAdminSelf = u.id === 'saw_vlogs_2026';
+                              
+                              return (
+                                <button
+                                  onClick={async () => {
+                                    if (isAdminSelf) return;
+                                    const nextStatus = isPremium ? 'standard' : 'premium';
+                                    try {
+                                      await handleUpdateVbsUser(u.id, { membershipStatus: nextStatus });
+                                      setToast({
+                                        message: `[${u.id}] ကို ${nextStatus === 'premium' ? 'Premium သို့ မြှင့်တင်ပြီးပါပြီ ✨' : 'Standard သို့ ပြောင်းလဲပြီးပါပြီ 📋'}`,
+                                        type: 'success',
+                                        isVisible: true
+                                      });
+                                    } catch (err) {
+                                      console.error("Failed to toggle premium:", err);
+                                      setToast({
+                                        message: 'Update failed.',
+                                        type: 'error',
+                                        isVisible: true
+                                      });
+                                    }
+                                  }}
+                                  disabled={isAdminSelf}
+                                  className={`relative w-11 h-6 transition-all duration-300 rounded-full p-1 border ${
+                                    isAdminSelf ? 'opacity-50 cursor-not-allowed grayscale' : 'cursor-pointer'
+                                  } ${
+                                    isPremium || isAdminSelf
+                                      ? 'bg-brand-purple/20 border-brand-purple/40 shadow-[0_0_15px_rgba(168,85,247,0.3)]' 
+                                      : 'bg-slate-200 dark:bg-slate-800 border-slate-300 dark:border-slate-700'
+                                  }`}
+                                >
+                                  <motion.div
+                                    animate={{ 
+                                      x: (isPremium || isAdminSelf) ? 20 : 0,
+                                      backgroundColor: (isPremium || isAdminSelf) ? '#a855f7' : '#94a3b8'
+                                    }}
+                                    transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                                    className="w-4 h-4 rounded-full shadow-lg"
+                                  />
+                                </button>
+                              );
+                            })()}
                           </div>
                         </td>
                         <td className="px-4 py-4">
-                          <div className="flex items-center gap-2 text-xs text-slate-500">
-                            <Calendar size={12} />
-                            {u.expiryDate ? new Date(u.expiryDate).toLocaleDateString() : 'မရှိပါ'}
-                          </div>
+                          {renderExpiry(u.expiryDate)}
+                        </td>
+                        <td className="px-4 py-4">
+                          {u.isActive ? (
+                            <span className="flex items-center gap-1.5 text-emerald-500 text-[10px] font-bold uppercase">
+                              <CheckCircle2 size={12} /> {t('admin.active')}
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1.5 text-red-500 text-[10px] font-bold uppercase">
+                              <XCircle size={12} /> {t('admin.deactivated')}
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-4 text-right">
-                          <div className="flex items-center justify-end gap-1">
+                          <div className="flex items-center justify-end gap-2">
                             <button
-                              onClick={() => handleEditId(u)}
+                              onClick={() => handleExtendExpiry(u.id, u.expiryDate)}
+                              className="p-2 text-slate-500 hover:text-emerald-500 hover:bg-emerald-500/10 rounded-lg transition-all"
+                              title={t('admin.extend30Days')}
+                            >
+                              <Calendar size={16} />
+                            </button>
+                            <button
+                              onClick={() => handleSetCustomExpiry(u.id)}
                               className="p-2 text-slate-500 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
-                              title="ပြင်ဆင်မည်"
+                              title={t('admin.setCustomExpiry')}
                             >
                               <Edit3 size={16} />
                             </button>
                             <button
+                              onClick={() => handleUpdatePassword(u.id)}
+                              className="p-2 text-slate-500 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
+                              title={t('admin.updatePassword')}
+                            >
+                              <Lock size={16} />
+                            </button>
+                            <button
+                              onClick={() => {
+                                const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
+                                handleUpdateVbsUser(u.id, { isUnlimited: !userCtrl?.isUnlimited });
+                              }}
+                              className={`p-2 rounded-lg transition-all border ${vbsUsers.find(vc => vc.vbsId === u.id)?.isUnlimited ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-slate-100 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10 hover:border-emerald-500/50 hover:text-emerald-500'}`}
+                              title={t('admin.toggleVIP')}
+                            >
+                              <Sparkles size={16} />
+                            </button>
+                            <button
+                              onClick={() => handleUpdateVbsUser(u.id, { dailyUsage: 0, lastUsedDate: new Date().toDateString() })}
+                              className="p-2 text-blue-500 hover:bg-blue-500/10 rounded-lg transition-all"
+                              title={t('admin.resetUsage')}
+                            >
+                              <RefreshCw size={16} />
+                            </button>
+                            <button
                               onClick={() => handleToggleRole(u.id, u.role || 'user')}
                               className="p-2 text-slate-500 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
-                              title="အဆင့်ပြောင်းရန်"
+                              title={t('admin.toggleRole')}
                             >
-                              <Shield size={16} />
+                              <ShieldCheck size={16} />
                             </button>
                             <button
                               onClick={() => handleToggleStatus(u.id, u.isActive)}
                               className={`p-2 rounded-lg transition-all ${u.isActive ? 'text-amber-500 hover:bg-amber-500/10' : 'text-emerald-500 hover:bg-emerald-500/10'}`}
-                              title={u.isActive ? 'ပိတ်ရန်' : 'ဖွင့်ရန်'}
+                              title={u.isActive ? t('admin.deactivate') : t('admin.activate')}
                             >
                               <RefreshCw size={16} />
                             </button>
                             <button
                               onClick={() => handleDeleteId(u.id)}
                               disabled={isDeletingUser === u.id}
-                              className="p-2 text-red-500 hover:bg-red-500/10 rounded-lg transition-all disabled:opacity-50"
-                              title="ဖျက်မည်"
+                              className="p-2 text-slate-500 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all disabled:opacity-50"
+                              title={t('history.delete')}
                             >
                               {isDeletingUser === u.id ? <RefreshCw size={16} className="animate-spin" /> : <Trash2 size={16} />}
                             </button>
@@ -888,7 +1383,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
                     {filteredUsers.length === 0 && (
                       <tr>
                         <td colSpan={6} className="py-10 text-center text-slate-500 italic text-sm">
-                          ရှာဖွေမှုနှင့် ကိုက်ညီသော အသုံးပြုသူ မရှိပါ။
+                          No Access Codes found matching your search.
                         </td>
                       </tr>
                     )}
@@ -903,9 +1398,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
               <div className="flex items-center gap-3">
                 <User className="text-brand-purple" size={20} />
-                <h3 className="text-lg font-bold text-slate-900 dark:text-white">မှတ်ပုံတင်ထားသော အသုံးပြုသူများ</h3>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">{t('admin.registeredUsers')}</h3>
                 <span className="px-2 py-0.5 bg-brand-purple/20 text-brand-purple border border-brand-purple/30 rounded-lg text-[10px] font-bold uppercase">
-                  စုစုပေါင်း {registeredUsers.length} ဦး
+                  {registeredUsers.length} {t('admin.stats')}
                 </span>
               </div>
             </div>
@@ -919,12 +1414,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-white/5">
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">အသုံးပြုသူ</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">အဆင့်</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">အတည်ပြုချက်</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">စတင်ဝင်ရောက်သည့်ရက်</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">နောက်ဆုံးဝင်ရောက်မှု</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">လုပ်ဆောင်ချက်</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.user')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.roleLabel')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.verification')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.joined')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.lastActivity')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">{t('admin.actions')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-white/5">
@@ -938,21 +1433,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
                         </td>
                         <td className="px-4 py-4">
                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${user.role === 'admin' ? 'bg-brand-purple/20 text-brand-purple border-brand-purple/30' : 'bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10'}`}>
-                            {user.role === 'admin' ? 'အက်ဒမင်' : 'အသုံးပြုသူ'}
+                            {user.role}
                           </span>
                         </td>
                         <td className="px-4 py-4">
                           {user.is_verified ? (
                             <span className="flex items-center gap-1.5 text-emerald-500 text-[10px] font-bold uppercase">
-                              <CheckCircle2 size={12} /> အတည်ပြုပြီး
+                              <CheckCircle2 size={12} /> Verified
                             </span>
                           ) : user.pending_verification ? (
                             <span className="flex items-center gap-1.5 text-amber-500 text-[10px] font-bold uppercase">
-                              <RefreshCw size={12} className="animate-spin" /> စောင့်ဆိုင်းဆဲ
+                              <RefreshCw size={12} className="animate-spin" /> Pending
                             </span>
                           ) : (
                             <span className="flex items-center gap-1.5 text-slate-500 text-[10px] font-bold uppercase">
-                              <XCircle size={12} /> အတည်မပြုရသေး
+                              <XCircle size={12} /> Not Verified
                             </span>
                           )}
                         </td>
@@ -971,9 +1466,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
                             <button
                               onClick={() => handleToggleRegisteredUserRole(user.uid, user.role)}
                               className="p-2 text-slate-500 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
-                              title="အဆင့်ပြောင်းရန်"
+                              title="Toggle Role"
                             >
-                              <Shield size={16} />
+                              <ShieldCheck size={16} />
                             </button>
                             {!user.is_verified && (
                               <button
@@ -982,7 +1477,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
                                 className="px-3 py-1.5 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500 hover:text-white border border-emerald-500/20 rounded-lg text-[10px] font-bold uppercase transition-all disabled:opacity-50 flex items-center gap-2"
                               >
                                 {isVerifyingUser === user.uid && <RefreshCw size={12} className="animate-spin" />}
-                                အတည်ပြုမည်
+                                Verify
                               </button>
                             )}
                           </div>
@@ -992,7 +1487,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
                     {registeredUsers.length === 0 && (
                       <tr>
                         <td colSpan={6} className="py-10 text-center text-slate-500 italic text-sm">
-                          မှတ်ပုံတင်ထားသော အသုံးပြုသူ မရှိသေးပါ။
+                          No registered users found.
                         </td>
                       </tr>
                     )}
@@ -1003,244 +1498,564 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, isA
           </div>
         </div>
       </div>
-    )}
+      )}
 
-      {activeTab === 'system' && (
-        <div className="bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl transition-colors duration-300 neon-border-blue">
-          <div className="flex items-center gap-3 mb-8">
-            <Settings className="text-brand-purple" size={24} />
-            <h3 className="text-xl font-bold text-slate-900 dark:text-white font-mono uppercase tracking-tighter">စနစ်ဆိုင်ရာ API Keys များ</h3>
+      {activeTab === 'system' && !configOnly && (
+        <div className="max-w-4xl mx-auto w-full space-y-8">
+          {/* API Key Rotation & Switch */}
+          <div className="premium-glass rounded-[32px] p-6 sm:p-8 shadow-2xl transition-all duration-300 border border-white/5">
+            <div className="flex items-center gap-3 mb-8">
+              <div className="w-10 h-10 bg-brand-purple/20 text-brand-purple rounded-xl flex items-center justify-center border border-brand-purple/20">
+                <Key size={20} />
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white">{t('admin.apiKeyRotation')}</h3>
+                <p className="text-slate-500 dark:text-slate-400 text-xs">{t('admin.apiKeyRotationDesc')}</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveGlobalSettings} className="space-y-6">
+              <div className="bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-white">{t('admin.allowAdminKeys')}</h4>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{t('admin.allowAdminKeysDesc')}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setGlobalSettings({ ...globalSettings, allow_admin_keys: !globalSettings.allow_admin_keys })}
+                    className={`w-12 h-6 rounded-full transition-all relative ${globalSettings.allow_admin_keys ? 'bg-brand-purple' : 'bg-slate-300 dark:bg-slate-700'}`}
+                  >
+                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${globalSettings.allow_admin_keys ? 'left-7' : 'left-1'}`} />
+                  </button>
+                </div>
+
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 gap-4">
+                    {/* Primary Key */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between px-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.primaryKey')}</label>
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${GeminiTTSService.getActiveKeyIndex() === 0 ? 'text-brand-purple bg-brand-purple/10' : 'text-slate-400 bg-slate-100 dark:bg-slate-800'}`}>
+                          {GeminiTTSService.getActiveKeyIndex() === 0 ? t('admin.active') : t('admin.standby')}
+                        </span>
+                      </div>
+                      <input
+                        type={showSecrets ? "text" : "password"}
+                        value={globalSettings.primary_key || ''}
+                        onChange={(e) => setGlobalSettings({ ...globalSettings, primary_key: e.target.value })}
+                        placeholder="Enter Primary Gemini API Key..."
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                      />
+                    </div>
+
+                    {/* Secondary Key */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between px-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.secondaryKey')}</label>
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${GeminiTTSService.getActiveKeyIndex() === 1 ? 'text-brand-purple bg-brand-purple/10' : 'text-slate-400 bg-slate-100 dark:bg-slate-800'}`}>
+                          {GeminiTTSService.getActiveKeyIndex() === 1 ? t('admin.active') : t('admin.backup1')}
+                        </span>
+                      </div>
+                      <input
+                        type={showSecrets ? "text" : "password"}
+                        value={globalSettings.secondary_key || ''}
+                        onChange={(e) => setGlobalSettings({ ...globalSettings, secondary_key: e.target.value })}
+                        placeholder="Enter Secondary Gemini API Key..."
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                      />
+                    </div>
+
+                    {/* Backup Key */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between px-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.backupKey')}</label>
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${GeminiTTSService.getActiveKeyIndex() === 2 ? 'text-brand-purple bg-brand-purple/10' : 'text-slate-400 bg-slate-100 dark:bg-slate-800'}`}>
+                          {GeminiTTSService.getActiveKeyIndex() === 2 ? t('admin.active') : t('admin.backup2')}
+                        </span>
+                      </div>
+                      <input
+                        type={showSecrets ? "text" : "password"}
+                        value={globalSettings.backup_key || ''}
+                        onChange={(e) => setGlobalSettings({ ...globalSettings, backup_key: e.target.value })}
+                        placeholder="Enter Backup Gemini API Key..."
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-slate-500 italic px-1">
+                    {t('admin.keyRotationDesc')}
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isSavingKeys}
+                  className="w-full py-3.5 bg-brand-purple hover:bg-brand-purple/90 text-white rounded-xl text-sm font-bold shadow-lg shadow-brand-purple/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isSavingKeys ? (
+                    <div className="flex items-center gap-0.5 h-4">
+                      {[...Array(3)].map((_, i) => (
+                        <motion.div
+                          key={i}
+                          className="w-0.5 bg-white rounded-full"
+                          animate={{
+                            height: [4, 12, 4],
+                          }}
+                          transition={{
+                            duration: 0.6,
+                            repeat: Infinity,
+                            delay: i * 0.1,
+                          }}
+                        />
+                      ))}
+                    </div>
+                  ) : <Save size={18} />}
+                  {t('admin.saveSettings')}
+                </button>
+              </div>
+            </form>
           </div>
-
-          <form onSubmit={(e) => e.preventDefault()} className="space-y-8">
-            {/* System Live Switch */}
-            <div className="p-6 bg-slate-50 dark:bg-slate-950/50 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center justify-between group transition-all duration-500 hover:border-brand-purple/30">
-              <div className="space-y-1">
-                <h4 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full animate-pulse ${systemConfig.system_live ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.8)]' : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)]'}`} />
-                  စနစ်ကို အသုံးပြုခွင့်ပေးမည်
-                </h4>
-                <p className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">Enable System for Users</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSystemConfig({ ...systemConfig, system_live: !systemConfig.system_live })}
-                className={`relative w-14 h-7 rounded-full transition-all duration-500 p-1 ${
-                  systemConfig.system_live 
-                    ? 'bg-green-500 shadow-[0_0_15px_rgba(34,197,94,0.4)]' 
-                    : 'bg-slate-300 dark:bg-slate-800'
-                }`}
-              >
-                <div className={`w-5 h-5 bg-white rounded-full shadow-lg transition-all duration-500 transform ${
-                  systemConfig.system_live ? 'translate-x-7' : 'translate-x-0'
-                }`} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              {/* RapidAPI Key */}
-              <div className="space-y-3">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1 font-mono flex items-center gap-2">
-                  <Database size={12} /> RapidAPI Key (YouTube Transcript အတွက်)
-                </label>
-                <div className="relative">
-                  <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                  <input
-                    type={showRapidKey ? "text" : "password"}
-                    value={systemConfig.rapidapi_key || ''}
-                    onChange={(e) => setSystemConfig({ ...systemConfig, rapidapi_key: e.target.value })}
-                    placeholder="RapidAPI Key ထည့်ပါ"
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-12 py-4 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowRapidKey(!showRapidKey)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-brand-purple transition-colors"
-                  >
-                    {showRapidKey ? <EyeOff size={18} /> : <Eye size={18} />}
-                  </button>
-                </div>
-              </div>
-
-              {/* Gemini API Key */}
-              <div className="space-y-3">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1 font-mono flex items-center gap-2">
-                  <Send size={12} /> Gemini API Key (AI စနစ်အတွက်)
-                </label>
-                <div className="relative">
-                  <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                  <input
-                    type={showGeminiKey ? "text" : "password"}
-                    value={systemConfig.gemini_api_key || ''}
-                    onChange={(e) => setSystemConfig({ ...systemConfig, gemini_api_key: e.target.value })}
-                    placeholder="Gemini API Key ထည့်ပါ"
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-12 py-4 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowGeminiKey(!showGeminiKey)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-brand-purple transition-colors"
-                  >
-                    {showGeminiKey ? <EyeOff size={18} /> : <Eye size={18} />}
-                  </button>
-                </div>
-              </div>
-
-              {/* OpenAI API Key */}
-              <div className="space-y-3">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1 font-mono flex items-center gap-2">
-                  <Send size={12} /> OpenAI API Key (TTS အတွက်)
-                </label>
-                <div className="relative">
-                  <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                  <input
-                    type={showOpenAIKey ? "text" : "password"}
-                    value={systemConfig.openai_api_key || ''}
-                    onChange={(e) => setSystemConfig({ ...systemConfig, openai_api_key: e.target.value })}
-                    placeholder="OpenAI API Key ထည့်ပါ"
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-12 py-4 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowOpenAIKey(!showOpenAIKey)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-brand-purple transition-colors"
-                  >
-                    {showOpenAIKey ? <EyeOff size={18} /> : <Eye size={18} />}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-6 border-t border-slate-200 dark:border-white/5">
-              <button
-                type="button"
-                onClick={handleSaveSystemConfig}
-                disabled={isSavingSystem}
-                className="px-8 py-4 bg-brand-purple text-white rounded-xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center gap-3 disabled:opacity-50 active:scale-95 font-mono uppercase tracking-widest hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] btn-pulse"
-              >
-                {isSavingSystem ? <RefreshCw size={20} className="animate-spin" /> : <Save size={20} />}
-                ပြင်ဆင်ချက်များ သိမ်းဆည်းမည်
-              </button>
-            </div>
-          </form>
         </div>
       )}
 
-      {activeTab === 'rules' && (
-        <div className="space-y-8">
-          <div className="bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl transition-colors duration-300 neon-border-purple">
-            <div className="flex items-center gap-3 mb-8">
-              <Languages className="text-brand-purple" size={24} />
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white font-mono uppercase tracking-tighter">
-                {editingRuleId ? 'စည်းမျဉ်း ပြင်ဆင်ရန်' : 'စည်းမျဉ်းအသစ် ထည့်ရန်'}
-              </h3>
+      {configOnly && (
+        <div className="max-w-4xl mx-auto w-full space-y-12">
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex items-center gap-3 text-amber-600 mb-8">
+              <Shield size={20} />
+              <p className="text-xs font-bold uppercase tracking-widest">Infrastructure Configuration Mode</p>
+            </div>
+          
+          {/* Firebase & Telegram Settings */}
+          <div className="bg-white/50 backdrop-blur dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl transition-colors duration-300">
+              <div className="flex items-center justify-between mb-8">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-brand-purple/20 text-brand-purple rounded-xl flex items-center justify-center border border-brand-purple/20">
+                    <Settings size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-900 dark:text-white">Firebase & Telegram Settings</h3>
+                    <p className="text-slate-500 dark:text-slate-400 text-xs">Configure Infrastructure Integrations</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowSecrets(!showSecrets)}
+                  className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-900/50 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 dark:text-slate-400 text-xs font-bold transition-all"
+                >
+                  {showSecrets ? <EyeOff size={14} /> : <Eye size={14} />}
+                  {showSecrets ? 'Hide Secrets' : 'Show Secrets'}
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveSystemConfig} className="space-y-8">
+                {isSystemLoading ? (
+                  <div className="flex items-center justify-center py-20">
+                    <div className="flex items-center justify-center gap-1 h-10">
+                      {[...Array(5)].map((_, i) => (
+                        <motion.div
+                          key={i}
+                          className="w-1 bg-brand-purple rounded-full"
+                          animate={{
+                            height: [10, 30, 10],
+                            opacity: [0.5, 1, 0.5],
+                          }}
+                          transition={{
+                            duration: 0.8,
+                            repeat: Infinity,
+                            delay: i * 0.1,
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {/* Firebase Section */}
+                <div className="space-y-6">
+                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
+                    <Database size={16} className="text-brand-purple" />
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Firebase Configuration</h4>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Project ID</label>
+                      <input
+                        type="text"
+                        value={systemConfig.firebase_project_id}
+                        onChange={(e) => setSystemConfig({ ...systemConfig, firebase_project_id: e.target.value })}
+                        placeholder="e.g. my-project-123"
+                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">API Key</label>
+                      <input
+                        type={showSecrets ? "text" : "password"}
+                        value={systemConfig.firebase_api_key}
+                        onChange={(e) => setSystemConfig({ ...systemConfig, firebase_api_key: e.target.value })}
+                        placeholder="AIzaSy..."
+                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Auth Domain</label>
+                      <input
+                        type="text"
+                        value={systemConfig.firebase_auth_domain}
+                        onChange={(e) => setSystemConfig({ ...systemConfig, firebase_auth_domain: e.target.value })}
+                        placeholder="my-project.firebaseapp.com"
+                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">App ID</label>
+                      <input
+                        type="text"
+                        value={systemConfig.firebase_app_id}
+                        onChange={(e) => setSystemConfig({ ...systemConfig, firebase_app_id: e.target.value })}
+                        placeholder="1:123456789:web:abcdef"
+                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Telegram Section */}
+                <div className="space-y-6">
+                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
+                    <Send size={16} className="text-brand-purple" />
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Telegram Notifications</h4>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Bot Token</label>
+                      <input
+                        type={showSecrets ? "text" : "password"}
+                        value={systemConfig.telegram_bot_token}
+                        onChange={(e) => setSystemConfig({ ...systemConfig, telegram_bot_token: e.target.value })}
+                        placeholder="123456789:ABC..."
+                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Chat ID</label>
+                      <input
+                        type="text"
+                        value={systemConfig.telegram_chat_id}
+                        onChange={(e) => setSystemConfig({ ...systemConfig, telegram_chat_id: e.target.value })}
+                        placeholder="e.g. -100123456789"
+                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Debug & Testing Section */}
+                <div className="space-y-6">
+                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
+                    <RefreshCw size={16} className="text-brand-purple" />
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Debug & Testing</h4>
+                  </div>
+                  
+                  <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                    <div>
+                      <h5 className="text-sm font-bold text-slate-900 dark:text-white">Mock Generation Mode</h5>
+                      <p className="text-xs text-slate-500">Enable this to test UI transitions without calling the real Gemini API.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSystemConfig({ ...systemConfig, mock_mode: !systemConfig.mock_mode })}
+                      className={`w-12 h-6 rounded-full transition-all relative ${systemConfig.mock_mode ? 'bg-brand-purple' : 'bg-slate-300 dark:bg-slate-700'}`}
+                    >
+                      <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${systemConfig.mock_mode ? 'left-7' : 'left-1'}`} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-6">
+                  <button
+                    type="submit"
+                    disabled={isSavingSystem}
+                    className="w-full py-4 bg-brand-purple text-white rounded-2xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95"
+                  >
+                    {isSavingSystem ? (
+                      <div className="flex items-center gap-0.5 h-5">
+                        {[...Array(3)].map((_, i) => (
+                          <motion.div
+                            key={i}
+                            className="w-1 bg-white rounded-full"
+                            animate={{
+                              height: [6, 16, 6],
+                            }}
+                            transition={{
+                              duration: 0.6,
+                              repeat: Infinity,
+                              delay: i * 0.1,
+                            }}
+                          />
+                        ))}
+                      </div>
+                    ) : <Save size={20} />}
+                    Save System Configuration
+                  </button>
+                  <p className="text-center text-[10px] text-slate-500 mt-4 italic">
+                    Note: Changes to Firebase settings may require an app reload to take full effect.
+                  </p>
+                </div>
+                  </>
+                )}
+              </form>
+            </div>
+        </div>
+      )}
+
+      {activeTab === 'rules' && !configOnly && (
+        <div className="max-w-4xl mx-auto w-full">
+          <div className="premium-glass rounded-[32px] p-6 sm:p-8 shadow-2xl transition-all duration-300 border border-white/5">
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-brand-purple/20 text-brand-purple rounded-xl flex items-center justify-center border border-brand-purple/20">
+                  <Languages size={20} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900 dark:text-white">Pronunciation Rules</h3>
+                  <p className="text-slate-500 dark:text-slate-400 text-xs">Manage global text replacement rules for TTS</p>
+                </div>
+              </div>
             </div>
 
-            <form onSubmit={handleCreateRule} className="grid grid-cols-1 md:grid-cols-12 gap-6 items-end">
-              <div className="md:col-span-5 space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1 font-mono">မူရင်းစာသား (Original)</label>
-                <input
-                  type="text"
-                  value={newRuleOriginal}
-                  onChange={(e) => setNewRuleOriginal(e.target.value)}
-                  placeholder="ဥပမာ - ChatGPT"
-                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-4 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
-                  required
-                />
+            <form onSubmit={handleCreateRule} className="space-y-6 mb-10">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Original Text</label>
+                  <input
+                    type="text"
+                    value={newRuleOriginal}
+                    onChange={(e) => setNewRuleOriginal(e.target.value)}
+                    placeholder="e.g. AI"
+                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Replacement Text</label>
+                  <input
+                    type="text"
+                    value={newRuleReplacement}
+                    onChange={(e) => setNewRuleReplacement(e.target.value)}
+                    placeholder="e.g. Artificial Intelligence"
+                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                    required
+                  />
+                </div>
               </div>
-              <div className="md:col-span-5 space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1 font-mono">အစားထိုးရန် (Replacement)</label>
-                <input
-                  type="text"
-                  value={newRuleReplacement}
-                  onChange={(e) => setNewRuleReplacement(e.target.value)}
-                  placeholder="ဥပမာ - ချတ် ဂျီပီတီ"
-                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-4 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
-                  required
-                />
-              </div>
-              <div className="md:col-span-2 flex gap-2">
+              <div className="flex gap-3">
                 <button
                   type="submit"
                   disabled={isSavingRule}
-                  className="flex-1 py-4 bg-brand-purple text-white rounded-xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95 font-mono uppercase tracking-widest btn-pulse"
+                  className="flex-1 py-4 bg-brand-purple text-white rounded-2xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95"
                 >
-                  {isSavingRule ? <RefreshCw size={18} className="animate-spin" /> : editingRuleId ? <Save size={18} /> : <Plus size={18} />}
-                  {editingRuleId ? 'သိမ်းမည်' : 'ထည့်မည်'}
+                  {isSavingRule ? <RefreshCw size={20} className="animate-spin" /> : (editingRuleId ? <Save size={20} /> : <Plus size={20} />)}
+                  {editingRuleId ? 'Update Pronunciation Rule' : 'Add Pronunciation Rule'}
                 </button>
                 {editingRuleId && (
                   <button
                     type="button"
                     onClick={cancelEditRule}
-                    className="p-4 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+                    className="px-6 py-4 bg-slate-100 dark:bg-slate-900/50 text-slate-500 rounded-2xl font-bold hover:bg-slate-200 dark:hover:bg-slate-800 transition-all border border-slate-200 dark:border-slate-800"
                   >
-                    <XCircle size={18} />
+                    Cancel
                   </button>
                 )}
               </div>
             </form>
-          </div>
 
-          <div className="bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-2xl transition-colors duration-300">
-            <div className="flex items-center gap-3 mb-6">
-              <Database className="text-brand-purple" size={20} />
-              <h3 className="text-lg font-bold text-slate-900 dark:text-white">လက်ရှိ စည်းမျဉ်းများ</h3>
-              <span className="px-2 py-0.5 bg-brand-purple/20 text-brand-purple border border-brand-purple/30 rounded-lg text-[10px] font-bold uppercase">
-                {rules.length} ခု
-              </span>
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
+                <Edit3 size={16} className="text-brand-purple" />
+                <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Active Rules ({rules.length})</h4>
+              </div>
+
+              {isRulesLoading ? (
+                <div className="flex items-center justify-center py-10">
+                  <div className="flex items-center justify-center gap-1 h-8">
+                    {[...Array(4)].map((_, i) => (
+                      <motion.div
+                        key={i}
+                        className="w-1 bg-brand-purple rounded-full"
+                        animate={{
+                          height: [8, 24, 8],
+                          opacity: [0.5, 1, 0.5],
+                        }}
+                        transition={{
+                          duration: 0.8,
+                          repeat: Infinity,
+                          delay: i * 0.1,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : rules.length === 0 ? (
+                <div className="py-10 text-center text-slate-500 italic text-sm">
+                  No pronunciation rules defined yet.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3">
+                  {rules.map((rule) => (
+                    <div key={rule.id} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl group hover:border-brand-purple/30 transition-all">
+                      <div className="flex items-center gap-4 overflow-hidden">
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Original</span>
+                          <span className="text-sm font-mono text-slate-900 dark:text-white truncate">{rule.original}</span>
+                        </div>
+                        <div className="h-8 w-px bg-slate-200 dark:bg-white/10" />
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Replacement</span>
+                          <span className="text-sm font-mono text-brand-purple truncate">{rule.replacement}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => handleEditRule(rule)}
+                          className="p-2 text-slate-400 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                          title="Edit Rule"
+                        >
+                          <Edit3 size={18} />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteRule(rule.id)}
+                          disabled={isDeletingRule === rule.id}
+                          className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100 disabled:opacity-50"
+                          title="Delete Rule"
+                        >
+                          {isDeletingRule === rule.id ? <RefreshCw size={18} className="animate-spin" /> : <Trash2 size={18} />}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-
-            {isRulesLoading ? (
-              <div className="flex items-center justify-center py-20">
-                <div className="w-8 h-8 border-2 border-brand-purple/20 border-t-brand-purple rounded-full animate-spin" />
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {rules.map((rule) => (
-                  <div key={rule.id} className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex items-center justify-between group hover:border-brand-purple/30 transition-all">
-                    <div className="flex flex-col">
-                      <span className="text-xs font-bold text-slate-900 dark:text-white font-mono">{rule.original}</span>
-                      <span className="text-[10px] text-slate-500 font-mono mt-1">→ {rule.replacement}</span>
-                    </div>
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={() => handleEditRule(rule)}
-                        className="p-2 text-slate-400 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
-                      >
-                        <Edit3 size={14} />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteRule(rule.id)}
-                        disabled={isDeletingRule === rule.id}
-                        className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all"
-                      >
-                        {isDeletingRule === rule.id ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {rules.length === 0 && (
-                  <div className="col-span-full py-10 text-center text-slate-500 italic text-sm">
-                    စည်းမျဉ်းများ မရှိသေးပါ။
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         </div>
       )}
-      </div>
+    </div>
 
-      {toast.isVisible && (
-        <Toast 
-          message={toast.message} 
-          type={toast.type} 
-          isVisible={toast.isVisible}
-          onClose={() => setToast(prev => ({ ...prev, isVisible: false }))} 
-        />
-      )}
+      {/* Activity Logs Modal */}
+      <AnimatePresence>
+        {selectedUserLogs && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedUserLogs(null)}
+              className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-2xl bg-white dark:bg-slate-900 rounded-[32px] shadow-2xl border border-slate-200 dark:border-white/10 overflow-hidden flex flex-col max-h-[80vh]"
+            >
+              <div className="p-6 border-b border-slate-200 dark:border-white/5 flex items-center justify-between bg-slate-50/50 dark:bg-white/[0.02]">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 bg-brand-purple/10 rounded-2xl text-brand-purple">
+                    <History size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">လုပ်ဆောင်ချက်မှတ်တမ်းများ</h3>
+                    <p className="text-xs text-slate-500 font-medium font-mono uppercase tracking-wider mt-1">User ID: {selectedUserLogs}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setSelectedUserLogs(null)}
+                  className="p-2 hover:bg-slate-200 dark:hover:bg-white/10 rounded-xl transition-all text-slate-500"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-4">
+                {isLogsLoading ? (
+                   <div className="flex flex-col items-center justify-center py-20 gap-4">
+                     <RefreshCw size={32} className="text-brand-purple animate-spin" />
+                     <p className="text-sm text-slate-500 font-bold uppercase tracking-widest animate-pulse">Loading Logs...</p>
+                   </div>
+                ) : activityLogs.length === 0 ? (
+                   <div className="text-center py-20 bg-slate-50 dark:bg-white/5 rounded-3xl border border-dashed border-slate-200 dark:border-slate-800">
+                     <p className="text-slate-500 italic">မှတ်တမ်းမရှိသေးပါ။ (No logs found for this user.)</p>
+                   </div>
+                ) : (
+                  <div className="space-y-3">
+                    {activityLogs.map((log) => (
+                      <div key={log.id} className="p-4 bg-slate-50 dark:bg-white/5 rounded-2xl border border-slate-200 dark:border-white/10 flex items-start gap-4 hover:border-brand-purple/30 transition-all group">
+                        <div className={`p-2 rounded-xl shrink-0 ${
+                          log.type === 'login' ? 'bg-blue-500/10 text-blue-500' :
+                          log.type === 'tts' ? 'bg-brand-purple/10 text-brand-purple' :
+                          log.type === 'transcription' ? 'bg-amber-500/10 text-amber-500' :
+                          'bg-emerald-500/10 text-emerald-500'
+                        }`}>
+                          {log.type === 'login' ? <LogIn size={16} /> :
+                           log.type === 'tts' ? <Mic2 size={16} /> :
+                           log.type === 'transcription' ? <FileVideo size={16} /> :
+                           <CheckCircle2 size={16} />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-4 mb-1">
+                            <span className="text-xs font-bold uppercase tracking-widest text-slate-400">
+                              {log.type}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-medium">
+                              {log.createdAt ? new Date(log.createdAt).toLocaleString() : '—'}
+                            </span>
+                          </div>
+                          <p className="text-sm text-slate-700 dark:text-slate-300 font-medium leading-relaxed">
+                            {log.details}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              <div className="p-6 border-t border-slate-200 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02] flex justify-end">
+                <button
+                  onClick={() => setSelectedUserLogs(null)}
+                  className="px-6 py-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-xl font-bold text-sm hover:opacity-90 transition-all shadow-lg"
+                >
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <Toast 
+        message={toast.message}
+        type={toast.type}
+        isVisible={toast.isVisible}
+        onClose={() => setToast(prev => ({ ...prev, isVisible: false }))}
+      />
+      <Modal
+        isOpen={modal.isOpen}
+        onClose={() => setModal({ ...modal, isOpen: false })}
+        onConfirm={modal.onConfirm}
+        title={modal.title}
+        message={modal.message}
+        type={modal.type}
+        confirmText={modal.confirmText}
+        cancelText={modal.cancelText}
+        placeholder={modal.placeholder}
+        defaultValue={modal.defaultValue}
+        inputType={modal.inputType}
+      />
     </>
   );
 };
-
-export default AdminDashboard;
