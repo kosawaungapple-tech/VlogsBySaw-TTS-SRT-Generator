@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Headphones, Download, Play, Pause, FileText, Music, Volume2, VolumeX, RefreshCw, Sparkles, Clipboard, Check } from 'lucide-react';
+import { Headphones, Download, Play, Pause, FileText, Music, Volume2, VolumeX, RefreshCw, Sparkles, Clipboard, Check, AlertCircle } from 'lucide-react';
 import { AudioResult } from '../types';
 import { useLanguage } from '../contexts/LanguageContext';
 
@@ -10,6 +10,8 @@ interface OutputPreviewProps {
   globalVolume?: number;
   engineStatus?: 'ready' | 'cooling' | 'limit';
   retryCountdown?: number;
+  error?: string | null;
+  onRetry?: () => void;
   targetDuration?: {
     minutes: number;
     seconds: number;
@@ -53,6 +55,8 @@ export const OutputPreview: React.FC<OutputPreviewProps> = ({
   globalVolume,
   engineStatus = 'ready',
   retryCountdown = 0,
+  error = null,
+  onRetry,
   targetDuration,
   showToast
 }) => {
@@ -76,6 +80,13 @@ export const OutputPreview: React.FC<OutputPreviewProps> = ({
     if (audioRef.current && result) {
       const audio = audioRef.current;
       audio.load();
+      
+      // AUTO-PLAY: Play immediately on result arrival
+      audio.play().then(() => setIsPlaying(true)).catch(() => {
+        console.log("Auto-play blocked by browser or failed.");
+        setIsPlaying(false);
+      });
+
       setCurrentSrt(result.srtContent);
 
       const updateTime = () => setCurrentTime(audio.currentTime);
@@ -267,6 +278,27 @@ export const OutputPreview: React.FC<OutputPreviewProps> = ({
       console.error('Failed to copy text');
     }
   };
+
+  if (error && !isLoading) {
+    return (
+      <div className="glass-card rounded-[32px] p-12 sm:p-20 shadow-2xl flex flex-col items-center justify-center text-center transition-all duration-300 border border-rose-500/20 bg-rose-500/5 group">
+        <div className="w-24 h-24 bg-rose-50 dark:bg-rose-950/20 rounded-[32px] flex items-center justify-center text-rose-500 mb-8 border border-rose-200 dark:border-rose-800/50 group-hover:scale-110 transition-transform duration-500 shadow-inner">
+          <AlertCircle size={48} />
+        </div>
+        <h3 className="text-2xl font-bold mb-3 text-slate-900 dark:text-white tracking-tight">{t('common.error')}</h3>
+        <p className="text-slate-500 dark:text-slate-400 text-sm sm:text-base max-w-sm leading-relaxed mb-8">
+          {error === 'SERVER_BUSY_RETRY' ? 'Server Busy - Please Retry' : error}
+        </p>
+        <button
+          onClick={onRetry}
+          className="flex items-center gap-3 px-8 py-4 bg-brand-purple text-white rounded-2xl font-bold shadow-xl shadow-brand-purple/20 hover:bg-brand-purple/90 transition-all active:scale-95"
+        >
+          <RefreshCw size={20} />
+          Retry Generation
+        </button>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (

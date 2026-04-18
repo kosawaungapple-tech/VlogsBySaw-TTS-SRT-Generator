@@ -2,78 +2,20 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ===============================================================
-    // Assumed Data Model
-    // ===============================================================
-    //
-    // Collection: sessions
-    // Document ID: uid
-    // Fields:
-    //   - accessCode: string
-    //   - createdAt: string
-    //
-    // Collection: vlogs_users
-    // Document ID: accessCode
-    // Fields:
-    //   - id: string
-    //   - userId: string
-    //   - label: string
-    //   - isActive: boolean
-    //   - role: string ("admin" | "user")
-    //   - password: string (optional)
-    //   - expiryDate: string (optional)
-    //   - api_key_stored: string (optional)
-    //   - createdAt: string
-    //   - createdBy: string
-    //
-    // Collection: history
-    // Document ID: auto
-    // Fields:
-    //   - userId: string (matches accessCode)
-    //   - text: string
-    //   - audioStorageUrl: string
-    //   - srtStorageUrl: string
-    //   - createdAt: string
-    //   - config: map
-    //
-    // Collection: globalRules
-    // Document ID: auto
-    // Fields:
-    //   - original: string
-    //   - replacement: string
-    //   - isRegex: boolean
-    //   - isActive: boolean
-    //
-    // Collection: settings
-    // Document ID: "global"
-    // Fields:
-    //   - allow_global_key: boolean
-    //   - total_generations: number
-    //
-    // Collection: system_config
-    // Document ID: "main"
-    // Fields:
-    //   - firebase_project_id: string
-    //   - firebase_api_key: string
-    //
-    // Collection: user_controls
-    // Document ID: vbsId
-    // Fields:
-    //   - vbsId: string
-    //   - dailyUsage: number
-    //   - lastUsedDate: string
-    //   - isUnlimited: boolean
-    //   - isBlocked: boolean
-    //   - customLimit: number (optional)
-    //   - expiryDate: string (optional)
-    //   - updatedAt: timestamp
-    // ===============================================================
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
 
     // ===============================================================
     // Helper Functions
     // ===============================================================
-    function isAuthenticated() {
+    function isSignedIn() {
       return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function getAccessCode() {
@@ -83,34 +25,41 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      let accessCode = getAccessCode();
-      return isAuthenticated() && (
-        (accessCode == 'saw_vlogs_2026') ||
-        (accessCode == 'SAW-ADMIN-2026') ||
-        (accessCode != null && 
-         exists(/databases/$(database)/documents/vlogs_users/$(accessCode)) &&
-         get(/databases/$(database)/documents/vlogs_users/$(accessCode)).data.role == 'admin') ||
-        (request.auth.token.email == "hankozinsa@gmail.com" && request.auth.token.email_verified == true)
+      return isSignedIn() && (
+        (request.auth.token.email == "kosawaung.apple@gmail.com" && request.auth.token.email_verified == true) ||
+        (request.auth.token.email == "saw_vlogs_2026@vbs.com" && request.auth.token.email_verified == true) ||
+        (request.auth.token.email == "hankozinsa@gmail.com" && request.auth.token.email_verified == true) ||
+        (getAccessCode() == 'saw_vlogs_2026') ||
+        (getAccessCode() == 'SAW-ADMIN-2026') ||
+        (getAccessCode() != null && 
+         exists(/databases/$(database)/documents/vlogs_users/$(getAccessCode())) &&
+         get(/databases/$(database)/documents/vlogs_users/$(getAccessCode())).data.role == 'admin')
       );
     }
 
-    function isDocOwner() {
-      let accessCode = getAccessCode();
-      return isAuthenticated() && accessCode != null && resource.data.userId == accessCode;
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isDocOwner(userId) {
+      return isSignedIn() && (getAccessCode() == userId || request.auth.uid == userId);
     }
 
     function isValidAuthorizedUser(data) {
-      return data.keys().hasAll(['isActive', 'role']) &&
-             (!('userId' in data) || (data.userId is string && data.userId.size() > 0)) &&
+      return data.keys().hasAll(['isActive', 'role', 'createdAt']) &&
+             (!('userId' in data) || (data.userId is string && data.userId.size() > 0 && data.userId.size() < 128)) &&
              data.isActive is bool &&
              data.role in ['admin', 'user'];
     }
 
     function isValidHistoryItem(data) {
       return data.keys().hasAll(['userId', 'text', 'createdAt']) &&
-             data.userId is string && data.userId.size() > 0 && data.userId.size() < 100 &&
-             data.text is string && data.text.size() <= 50000 &&
-             data.createdAt is string;
+             data.userId is string && data.userId.size() > 0 && data.userId.size() < 128 &&
+             data.text is string && data.text.size() <= 60000;
     }
 
     function isValidPronunciationRule(data) {
@@ -121,19 +70,23 @@ service cloud.firestore {
 
     function isValidUserControl(data) {
       return data.keys().hasAll(['vbsId', 'dailyUsage', 'lastUsedDate', 'isUnlimited', 'isBlocked']) &&
-             data.vbsId is string && data.vbsId.size() > 0 && data.vbsId.size() < 100 &&
+             data.vbsId is string && data.vbsId.size() > 0 && data.vbsId.size() < 128 &&
              data.dailyUsage is number &&
              data.lastUsedDate is string &&
              data.isUnlimited is bool &&
-             data.isBlocked is bool &&
-             (!('membershipStatus' in data) || data.membershipStatus in ['standard', 'premium']) &&
-             (!('expiryDate' in data) || data.expiryDate is string);
+             data.isBlocked is bool;
+    }
+
+    function isValidActivityLog(data) {
+      return data.keys().hasAll(['vbsId', 'type', 'details', 'createdAt']) &&
+             data.vbsId is string && data.vbsId.size() > 0 &&
+             data.type is string &&
+             data.details is string;
     }
 
     function isValidSession(data) {
       return data.keys().hasAll(['accessCode', 'createdAt']) &&
-             data.accessCode is string && data.accessCode.size() > 0 && data.accessCode.size() < 100 &&
-             data.createdAt is string;
+             data.accessCode is string && data.accessCode.size() > 0 && data.accessCode.size() < 128;
     }
 
     // ===============================================================
@@ -141,100 +94,93 @@ service cloud.firestore {
     // ===============================================================
 
     match /sessions/{uid} {
-      allow read: if isAuthenticated() && request.auth.uid == uid;
-      allow create: if isAuthenticated() && request.auth.uid == uid && isValidSession(request.resource.data);
-      allow update: if isAuthenticated() && request.auth.uid == uid && isValidSession(request.resource.data);
-      allow delete: if isAuthenticated() && request.auth.uid == uid;
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create: if isSignedIn() && request.auth.uid == uid && isValidSession(incoming()) && incoming().createdAt == request.time;
+      allow update: if isSignedIn() && request.auth.uid == uid && isValidSession(incoming());
+      allow delete: if isSignedIn() && request.auth.uid == uid;
     }
 
     match /vlogs_users/{accessCode} {
-      // Anyone authenticated can try to get a specific access code to log in
-      allow get: if isAuthenticated();
-      // Only admins can list all users
+      allow get: if isSignedIn();
       allow list: if isAdmin();
       
-      // Admins can create new users, or anyone can bootstrap the default admins once
-      allow create: if (isAdmin() || 
+      allow create: if isValidId(accessCode) && (isAdmin() || 
                        (accessCode == 'SAW-ADMIN-2026' && !exists(/databases/$(database)/documents/vlogs_users/SAW-ADMIN-2026)) ||
                        (accessCode == 'saw_vlogs_2026' && !exists(/databases/$(database)/documents/vlogs_users/saw_vlogs_2026))) && 
-                       isValidAuthorizedUser(request.resource.data);
+                       isValidAuthorizedUser(incoming()) && incoming().createdAt == request.time;
       
-      // Users can update their own API key, but cannot change their role or ID
-      allow update: if isAuthenticated() && isValidAuthorizedUser(request.resource.data) && (
+      allow update: if isValidId(accessCode) && isSignedIn() && (
         isAdmin() || 
         (
           getAccessCode() == accessCode &&
-          request.resource.data.role == resource.data.role &&
-          request.resource.data.isActive == resource.data.isActive &&
-          (!('api_key_stored' in request.resource.data) || request.resource.data.api_key_stored is string)
+          incoming().role == existing().role &&
+          incoming().isActive == existing().isActive &&
+          (!('api_key_stored' in incoming()) || incoming().api_key_stored is string)
         )
       );
       
-      // Only admins can delete users
       allow delete: if isAdmin();
     }
 
     match /history/{historyId} {
-      // Users can read their own history, admins can read all
-      allow read: if isAuthenticated() && (isDocOwner() || isAdmin());
+      allow get: if isValidId(historyId) && isSignedIn() && (isDocOwner(existing().userId) || isAdmin());
+      allow list: if isSignedIn() && (isAdmin() || resource.data.userId == getAccessCode() || resource.data.userId == request.auth.uid);
       
-      // Users can create their own history
-      allow create: if isAuthenticated() && isValidHistoryItem(request.resource.data) && request.resource.data.userId == getAccessCode();
-      
-      // Users can update/delete their own history, admins can update/delete all
-      allow update: if isAuthenticated() && isValidHistoryItem(request.resource.data) && (isDocOwner() || isAdmin()) && request.resource.data.userId == resource.data.userId;
-      allow delete: if isAuthenticated() && (isDocOwner() || isAdmin());
+      allow create: if isValidId(historyId) && isSignedIn() && isValidHistoryItem(incoming()) && (incoming().userId == getAccessCode() || incoming().userId == request.auth.uid) && incoming().createdAt == request.time;
+      allow update: if isValidId(historyId) && isSignedIn() && isValidHistoryItem(incoming()) && (isDocOwner(existing().userId) || isAdmin()) && incoming().userId == existing().userId;
+      allow delete: if isValidId(historyId) && isSignedIn() && (isDocOwner(existing().userId) || isAdmin());
     }
 
     match /globalRules/{ruleId} {
-      allow read: if isAuthenticated();
-      allow create: if isAdmin() && isValidPronunciationRule(request.resource.data);
-      allow update: if isAdmin() && isValidPronunciationRule(request.resource.data);
-      allow delete: if isAdmin();
+      allow read: if isSignedIn();
+      allow create: if isValidId(ruleId) && isAdmin() && isValidPronunciationRule(incoming());
+      allow update: if isValidId(ruleId) && isAdmin() && isValidPronunciationRule(incoming());
+      allow delete: if isValidId(ruleId) && isAdmin();
     }
 
     match /settings/{document=**} {
-      allow read: if isAuthenticated();
+      allow read: if isSignedIn();
       allow write: if isAdmin();
     }
 
     match /system_config/{document=**} {
-      allow read: if isAuthenticated();
+      allow read: if isSignedIn();
       allow write: if isAdmin();
     }
     
     match /users/{userId} {
-      // Used for Google Auth admins
-      allow read, write: if isAdmin();
+      allow get: if isValidId(userId) && (isAdmin() || (isSignedIn() && request.auth.uid == userId));
+      allow list: if isAdmin();
+      allow write: if isValidId(userId) && (isAdmin() || (isSignedIn() && request.auth.uid == userId));
     }
 
     match /user_controls/{vbsId} {
-      // Users can read their own control doc, admins can read all
-      allow read: if isAuthenticated();
+      allow read: if isValidId(vbsId) && isSignedIn();
       
-      // Admins or users can initialize their own control doc
-      allow create: if isAuthenticated() && (isAdmin() || (isValidUserControl(request.resource.data) && request.resource.data.vbsId == vbsId));
+      allow create: if isValidId(vbsId) && isSignedIn() && (isAdmin() || (isValidUserControl(incoming()) && incoming().vbsId == vbsId));
       
-      // Users can update their usage, but not flags. Admins can update everything.
-      allow update: if isAuthenticated() && (
+      allow update: if isValidId(vbsId) && isSignedIn() && (
         isAdmin() || 
         (
-          isValidUserControl(request.resource.data) &&
-          request.resource.data.vbsId == resource.data.vbsId &&
-          request.resource.data.isUnlimited == resource.data.isUnlimited &&
-          request.resource.data.isBlocked == resource.data.isBlocked &&
-          (!('membershipStatus' in request.resource.data) || request.resource.data.membershipStatus == resource.data.membershipStatus) &&
-          (!('expiryDate' in request.resource.data) || request.resource.data.expiryDate == resource.data.expiryDate) &&
-          (!('customLimit' in request.resource.data) || request.resource.data.customLimit == resource.data.customLimit)
+          isValidUserControl(incoming()) &&
+          incoming().vbsId == existing().vbsId &&
+          incoming().isUnlimited == existing().isUnlimited &&
+          incoming().isBlocked == existing().isBlocked
         )
       );
       
-      allow delete: if isAdmin();
+      allow delete: if isValidId(vbsId) && isAdmin();
     }
 
     match /test/{docId} {
-      allow read: if true; // Used for connection testing
+      allow read: if true; 
       allow write: if false;
+    }
+
+    match /activity_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isValidId(logId) && isSignedIn() && isValidActivityLog(incoming()) && incoming().vbsId == getAccessCode() && incoming().createdAt == request.time;
+      allow update, delete: if false;
     }
   }
 }

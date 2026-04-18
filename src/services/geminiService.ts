@@ -1,4 +1,4 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, ThinkingLevel } from "@google/genai";
 import { TTSConfig, AudioResult, SRTSubtitle } from "../types";
 import { GEMINI_MODELS, VOICE_OPTIONS } from "../constants";
 import { pcmToWav, formatTime } from "../utils/audioUtils";
@@ -95,86 +95,114 @@ export class GeminiTTSService {
     }
   }
 
-  async generateTTS(text: string, config: TTSConfig, forceMock: boolean = false): Promise<AudioResult & { isSimulation?: boolean }> {
+  public async preProcessScript(text: string, targetSeconds: number): Promise<string> {
+    if (targetSeconds <= 0) return text;
+
+    // Use a fast model for reasoning
+    const model = 'gemini-3-flash-preview'; 
+    const baselineCharsPerSec = 17;
+    const estimatedDuration = text.length / baselineCharsPerSec;
+
+    // If text is significantly too long (e.g. > 130% of target duration), we suggest condensing
+    if (estimatedDuration > targetSeconds * 1.3) {
+      console.log(`TTS Service: Script pre-processing - Text likely too long (${estimatedDuration.toFixed(2)}s vs ${targetSeconds}s). Condensing...`);
+      
+      try {
+        const response = await this.ai.models.generateContent({
+          model,
+          contents: `I need to narrate the following text in exactly ${targetSeconds} seconds. 
+          Current text is too long. Please condense it while maintaining the original meaning and cinematic tone. 
+          Return ONLY the condensed text, no preamble. 
+          
+          Text: ${text}`,
+          config: {
+            temperature: 0.3
+          }
+        });
+
+        const condensedText = response.text?.trim();
+        if (condensedText) {
+          console.log(`TTS Service: Script condensed from ${text.length} to ${condensedText.length} chars.`);
+          return condensedText;
+        }
+      } catch (err) {
+        console.error("TTS Service: Script condensation failed", err);
+      }
+    }
+
+    return text;
+  }
+
+  public async generateTTS(
+    text: string, 
+    config: TTSConfig, 
+    forceMock: boolean = false,
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal
+  ): Promise<AudioResult & { isSimulation?: boolean }> {
     console.log("TTS Service: Starting generation...", { 
       forceMock, 
       textLength: text.length,
-      keyCount: this.apiKeys.length,
-      currentKeyIndex: GeminiTTSService.currentKeyIndex
+      model: config.model
     });
 
-    const runMock = async () => {
-      console.log("TTS Service: Running in SIMULATION mode");
-      await new Promise(resolve => setTimeout(resolve, 1500)); // Brief delay for realism
-      
-      // Estimate duration for simulation (approx 15 chars per second)
-      const estimatedDuration = Math.max(2, text.length / 15);
-      const sampleRate = 24000;
-      const numSamples = Math.floor(estimatedDuration * sampleRate);
-      const dummyBytes = new Uint8Array(numSamples * 2); // 16-bit PCM
-      
-      const wavBlob = pcmToWav(dummyBytes, sampleRate);
-      const audioUrl = URL.createObjectURL(wavBlob);
-      const subtitles = this.generateMockSRT(text, estimatedDuration);
-      const srtContent = subtitles.map(s => 
-        `${s.index}\n${s.startTime} --> ${s.endTime}\n${s.text}`
-      ).join('\n\n') + '\n\n';
+    if (signal?.aborted) throw new Error("AbortError");
 
-      console.log("TTS Service: Simulation generation successful", { estimatedDuration });
-      return {
-        audioUrl,
-        audioData: "MOCK_DATA",
-        srtContent,
-        subtitles,
-        isSimulation: true
-      };
-    };
+    // [PRE-PROCESSING CHECK]
+    const wordCount = text.split(/\s+/).filter(w => w.length > 0).length;
+    const targetDuration = config.targetDuration;
+    const totalTargetSeconds = targetDuration ? (targetDuration.minutes * 60 + targetDuration.seconds) : 0;
+    
+    // Burmese characters are dense, so we check character length too
+    const charCount = text.length;
+    if (totalTargetSeconds > 0) {
+      // 5000 chars is roughly 300 seconds (5 mins) at 16 chars/sec.
+      // If user wants 1 minute (60s), that's 5x speed boost (unnatural)
+      const maxNaturalChars = totalTargetSeconds * 25; // 25 chars/sec is very fast rapping
+      if (charCount > maxNaturalChars) {
+        throw new Error(`TEXT_TOO_LONG|${charCount}|${maxNaturalChars}`);
+      }
+    }
 
+    // No fallback to mock as ordered by commander
     if (forceMock) {
-      return await runMock();
+      throw new Error("MOCK_MODE_DISABLED");
     }
 
     if (!this.apiKeys[GeminiTTSService.currentKeyIndex]) {
-      console.error("TTS Service: API Key missing, falling back to simulation");
-      return await runMock();
+      throw new Error("API_KEY_MISSING");
     }
 
     const voiceId = config.voiceId || 'zephyr';
     const voice = VOICE_OPTIONS.find(v => v.id === voiceId) || VOICE_OPTIONS[0];
     const language = voice.name.split(' ')[0];
+    const { vocalStyle = 'natural', styleInstruction = '', pitch = 0, volume = 80 } = config;
     
     // Request Validation (Error 400 Fix)
-    const speed = Math.max(0.25, Math.min(4.0, parseFloat(String(config.speed)) || 1.0));
-    const pitch = Math.max(-20.0, Math.min(20.0, parseFloat(String(config.pitch)) || 0.0));
-    const volume = Math.max(0, Math.min(100, parseFloat(String(config.volume)) || 80));
+    let speed = Math.max(0.25, Math.min(4.0, parseFloat(String(config.speed)) || 1.0));
 
-    const styleCmd = config.styleInstruction?.trim() 
-      ? `Command: ${config.styleInstruction.trim()}. Now, read the following text: ` 
-      : "Narrate the following text in a natural, clear, and cinematic voice. ";
-
-    const targetDuration = config.targetDuration;
-    const totalTargetSeconds = targetDuration ? (targetDuration.minutes * 60 + targetDuration.seconds) : 0;
-    
-    const durationConstraint = totalTargetSeconds > 0
-      ? `You are a speed-controlled narrator. Current text MUST be narrated to fit EXACTLY into ${totalTargetSeconds} seconds. 
-         If the text is too long, you MUST speak faster. If it's too short, you MUST add pauses. 
-         DO NOT exceed the limit by even one second. 
-         You are a professional voice actor. You MUST time your speech to finish EXACTLY at ${targetDuration?.minutes} minutes and ${targetDuration?.seconds} seconds (${totalTargetSeconds} seconds). Do not finish early, do not finish late. 
-         Adjust the narration speed and word count accordingly to hit the target duration with 100% precision.`
-      : "";
+    if (totalTargetSeconds > 0) {
+      // [SINGLE-PASS TEMPO SYNC - COMMANDER ORDER]
+      const baselineCPS = language === 'Burmese' ? 14.0 : 16.5; 
+      const estimatedBaseDuration = text.length / baselineCPS;
+      
+      const calculatedSpeed = Math.max(0.6, Math.min(2.8, estimatedBaseDuration / totalTargetSeconds));
+      
+      speed = calculatedSpeed;
+      console.log(`TTS Service: Single-Pass Sync - Speed: ${speed.toFixed(2)}x`);
+    }
 
     const payload = {
       model: config.model || GEMINI_MODELS.TTS,
-      contents: [{ parts: [{ text: `${styleCmd}
-      Language: ${language}.
-      Gender: ${voice.gender}.
+      contents: [{ parts: [{ text: `Vocal Style: ${vocalStyle}. ${styleInstruction ? `Style Instruction: ${styleInstruction}. ` : ""}
       Speaking rate: ${speed.toFixed(2)}x. 
       Pitch: ${pitch.toFixed(1)}. 
       Volume: ${volume}%.
-      ${durationConstraint}
-      Ensure word-for-word accuracy and do not summarize: ${text}` }] }],
+      Language: ${language}.
+      Ensure word-for-word accuracy: ${text}` }] }],
       config: {
         responseModalities: [Modality.AUDIO],
+        temperature: config.creativityLevel || 0.4,
         speechConfig: {
           voiceConfig: {
             prebuiltVoiceConfig: {
@@ -192,8 +220,17 @@ export class GeminiTTSService {
 
     while (attempts < maxAttempts) {
       try {
-        console.log(`TTS Service: Sending request (Attempt ${attempts + 1}/${maxAttempts}) using key index ${GeminiTTSService.currentKeyIndex}`);
-        const response = await this.ai.models.generateContent(payload);
+        if (signal?.aborted) throw new Error("AbortError");
+        console.log(`TTS Service: Sending request (Attempt ${attempts + 1}/${maxAttempts}) using key index ${GeminiTTSService.currentKeyIndex} with 60s timeout`);
+        
+        // [60-SECOND EMERGENCY TIMEOUT - COMMANDER ORDER]
+        const apiPromise = this.ai.models.generateContent(payload);
+        const timeoutPromise = new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error("GENERATION_TIMEOUT")), 60000)
+        );
+
+        const response = await Promise.race([apiPromise, timeoutPromise]);
+        if (signal?.aborted) throw new Error("AbortError");
 
         console.log("TTS Service: Received response from API");
 
@@ -209,14 +246,18 @@ export class GeminiTTSService {
           bytes[i] = binaryString.charCodeAt(i);
         }
 
-        // Gemini TTS returns raw PCM (24000Hz, 16-bit, mono)
         const sampleRate = 24000;
-        const wavBlob = pcmToWav(bytes, sampleRate);
-        const audioUrl = URL.createObjectURL(wavBlob);
         
-        // Calculate actual duration: bytes / (sampleRate * bytesPerSample * channels)
-        // 16-bit mono = 2 bytes per sample
+        // Calculate actual duration
         const actualDuration = bytes.length / (sampleRate * 2);
+        
+        // [PURE SINGLE-PASS ESTIMATION - COMMANDER ORDER]
+        // Abandonment of post-process sync loops. Trust the estimation once.
+        const finalBytes = bytes;
+        
+        onProgress?.(100);
+        const wavBlob = pcmToWav(finalBytes, sampleRate);
+        const audioUrl = URL.createObjectURL(wavBlob);
         
         const effectiveDuration = totalTargetSeconds > 0 ? totalTargetSeconds : actualDuration;
         const subtitles = this.generateMockSRT(text, effectiveDuration);
@@ -224,14 +265,21 @@ export class GeminiTTSService {
           `${s.index}\n${s.startTime} --> ${s.endTime}\n${s.text}`
         ).join('\n\n') + '\n\n';
 
-        console.log("TTS Service: API generation successful", { actualDuration });
+        // [ULTIMATE STACK OVERFLOW FIX - NO SPREAD, ASYNC FILEREADER]
+        const finalBase64 = await this.uint8ArrayToBase64Async(finalBytes);
+
+        console.log("TTS Service: API generation successful", { actualDuration, finalDuration: (finalBytes.length / (sampleRate * 2)) });
         return {
           audioUrl,
-          audioData: base64Audio,
+          audioData: finalBase64,
           srtContent,
           subtitles
         };
       } catch (err: any) {
+        if (err.message === 'AbortError' || err.name === 'AbortError') {
+          throw err;
+        }
+
         const isRateLimit = err.status === 429 || 
                           (err.message && err.message.includes('429')) || 
                           (err.details && err.details.includes('429')) ||
@@ -248,18 +296,21 @@ export class GeminiTTSService {
           throw new Error("RATE_LIMIT_EXHAUSTED");
         }
 
+        if (err.status === 500 || (err.message && err.message.includes('500'))) {
+          throw new Error("SERVER_BUSY_RETRY");
+        }
+
         console.error("TTS Service: API call failed.", {
           message: err.message,
           status: err.status,
           attempts: attempts + 1
         });
         
-        // If we've exhausted all keys or it's not a rate limit error, fallback to mock
-        return await runMock();
+        throw err;
       }
     }
 
-    return await runMock();
+    throw new Error("TTS Service: Exhausted all available API channels.");
   }
 
   async rewriteContent(text: string): Promise<string> {
@@ -408,70 +459,65 @@ export class GeminiTTSService {
     }).filter((s): s is SRTSubtitle => s !== null);
   }
 
+  private async uint8ArrayToBase64Async(uint8: Uint8Array): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(new Blob([uint8]));
+    });
+  }
+
+  private uint8ArrayToBase64(uint8: Uint8Array): string {
+    // Legacy sync version, though uint8ArrayToBase64Async is preferred
+    const CHUNK_SIZE = 0x8000; // 32KB chunks
+    let index = 0;
+    let binary = '';
+    while (index < uint8.length) {
+      const chunk = uint8.subarray(index, index + CHUNK_SIZE);
+      // Safe use of spread for smaller chunks
+      binary += String.fromCharCode(...(chunk as unknown as any[]));
+      index += CHUNK_SIZE;
+    }
+    return window.btoa(binary);
+  }
+
   private generateMockSRT(text: string, totalDuration?: number): SRTSubtitle[] {
     // Clean text and handle multiple spaces
     const cleanText = text.replace(/\s+/g, ' ').trim();
-    
-    // Burmese text often doesn't have spaces. 
-    // We'll split by spaces first, then further split long chunks by characters.
     const words = cleanText.split(' ');
     const chunks: string[] = [];
-    const MAX_CHARS_PER_LINE = 48; // Target 45-50
-    const MAX_WORDS_PER_LINE = 10; // Target 10-12 Burmese words (if space-separated)
-
+    const MAX_CHARS_PER_LINE = 48; 
     let currentChunk = "";
-    let wordCountInChunk = 0;
-
+    
     for (const word of words) {
-      // If adding this word exceeds character limit or word limit
-      if ((currentChunk.length + word.length + 1 > MAX_CHARS_PER_LINE && currentChunk.length > 0) || 
-          (wordCountInChunk >= MAX_WORDS_PER_LINE)) {
+      if ((currentChunk.length + word.length + 1 > MAX_CHARS_PER_LINE && currentChunk.length > 0)) {
         chunks.push(currentChunk);
         currentChunk = word;
-        wordCountInChunk = 1;
       } else {
         currentChunk = currentChunk ? `${currentChunk} ${word}` : word;
-        wordCountInChunk++;
-      }
-
-      // Handle extremely long words (e.g. long Burmese strings without spaces)
-      while (currentChunk.length > MAX_CHARS_PER_LINE) {
-        chunks.push(currentChunk.substring(0, MAX_CHARS_PER_LINE));
-        currentChunk = currentChunk.substring(MAX_CHARS_PER_LINE);
-        wordCountInChunk = 1; // Reset word count for the remainder
       }
     }
     if (currentChunk) chunks.push(currentChunk);
 
     const subtitles: SRTSubtitle[] = [];
-    const totalChars = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-    
-    // If totalDuration is not provided, estimate it (approx 15 chars per second)
-    const effectiveDuration = totalDuration || (totalChars / 15);
+    const effectiveDuration = totalDuration || 10;
     
     let currentTime = 0;
     for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      // Calculate weight based on character length
-      const weight = chunk.length / totalChars;
-      let duration = weight * effectiveDuration;
-      
-      // Ensure the last subtitle ends EXACTLY at the effectiveDuration
-      let endTime = currentTime + duration;
-      if (i === chunks.length - 1) {
-        endTime = effectiveDuration;
-      }
-      
-      subtitles.push({
-        index: i + 1,
-        startTime: formatTime(currentTime),
-        endTime: formatTime(endTime),
-        text: chunk
-      });
-      
-      currentTime = endTime;
+        const duration = effectiveDuration / chunks.length;
+        const endTime = currentTime + duration;
+        subtitles.push({
+            index: i + 1,
+            startTime: formatTime(currentTime),
+            endTime: formatTime(endTime),
+            text: chunks[i]
+        });
+        currentTime = endTime;
     }
-
     return subtitles;
   }
 }

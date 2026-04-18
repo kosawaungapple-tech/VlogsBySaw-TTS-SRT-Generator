@@ -184,7 +184,7 @@ export const VideoTranscriber: React.FC<VideoTranscriberProps> = ({
         <p className="text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
           {t('video.contactAdmin')}
         </p>
-        {userControl?.vbsId && (
+        {userControl?.vbsId && false && (
           <div className="mt-8 p-4 bg-slate-100 dark:bg-white/5 rounded-2xl border border-slate-200 dark:border-white/10 inline-flex items-center gap-3">
             <User size={16} className="text-slate-400" />
             <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">{t('video.yourUserId')}</span>
@@ -214,7 +214,7 @@ export const VideoTranscriber: React.FC<VideoTranscriberProps> = ({
             <p className="text-slate-500 dark:text-slate-400 text-sm">
               {t('video.subtitle')}
             </p>
-            {userControl?.vbsId && (
+            {userControl?.vbsId && false && (
               <div className="flex items-center gap-2 px-2 py-0.5 bg-slate-100 dark:bg-white/5 rounded-md border border-slate-200 dark:border-white/10">
                 <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">ID:</span>
                 <span className="text-[10px] font-mono font-bold text-brand-purple">{userControl.vbsId}</span>

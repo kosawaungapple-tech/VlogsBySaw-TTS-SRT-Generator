@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AlertCircle, Wand2, Key, Settings, User, LogIn, LogOut, ShieldCheck, ShieldAlert, Shield, CheckCircle2, XCircle, History, Wrench, Plus, Trash2, Download, Play, Music, FileText, Eye, EyeOff, Cloud, RefreshCw, Zap, X, ExternalLink, Calendar, Clock, Mail, Wifi, Save, Lock, Info, ArrowRight, ChevronRight, Languages, Search, FileVideo, Clipboard } from 'lucide-react';
+import { AlertCircle, Wand2, Key, Settings, User, LogIn, LogOut, ShieldCheck, ShieldAlert, Shield, CheckCircle2, XCircle, History, Wrench, Plus, Trash2, Download, Play, Music, FileText, Eye, EyeOff, Cloud, RefreshCw, Zap, X, ExternalLink, Calendar, Clock, Mail, Wifi, Save, Lock, Info, ArrowRight, ChevronRight, Languages, Search, FileVideo, Clipboard, Mic2 } from 'lucide-react';
 import { WelcomePage } from './components/WelcomePage';
 import { Header } from './components/Header';
 import { ApiKeyModal } from './components/ApiKeyModal';
@@ -18,7 +18,7 @@ import { TTSConfig, AudioResult, PronunciationRule, HistoryItem, GlobalSettings,
 import { DEFAULT_RULES } from './constants';
 import { useLanguage } from './contexts/LanguageContext';
 import { pcmToWav } from './utils/audioUtils';
-import { db, storage, auth, signInAnonymously, signOut, onAuthStateChanged, doc, getDoc, getDocFromServer, setDoc, updateDoc, onSnapshot, handleFirestoreError, OperationType, collection, query, where, orderBy, addDoc, deleteDoc, getDocs, limit, ref, uploadString, getDownloadURL } from './firebase';
+import { db, storage, auth, signInAnonymously, signOut, onAuthStateChanged, doc, getDoc, getDocFromServer, setDoc, updateDoc, onSnapshot, handleFirestoreError, OperationType, collection, query, where, orderBy, addDoc, deleteDoc, getDocs, limit, ref, uploadString, getDownloadURL, serverTimestamp, Timestamp } from './firebase';
 
 type Tab = 'generate' | 'translator' | 'transcriber' | 'history' | 'tools' | 'admin' | 'vbs-admin';
 
@@ -32,7 +32,7 @@ export default function App() {
   const [customRules, setCustomRules] = useState('');
   const [saveToHistory, setSaveToHistory] = useState(false);
   const [config, setConfig] = useState<TTSConfig>({
-    model: 'gemini-2.5-flash-preview-tts',
+    model: 'gemini-3.1-flash-tts-preview',
     voiceId: 'zephyr',
     speed: 1.0,
     pitch: 0,
@@ -44,6 +44,10 @@ export default function App() {
     }
   });
   const [isLoading, setIsLoading] = useState(false);
+  const [isSyncingTempo, setIsSyncingTempo] = useState(false);
+  const [syncProgress, setSyncProgress] = useState(0);
+  const [syncStartTime, setSyncStartTime] = useState<number | null>(null);
+  const [syncElapsedTime, setSyncElapsedTime] = useState(0);
   const [result, setResult] = useState<AudioResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -74,6 +78,19 @@ export default function App() {
 
   const [vbsId, setVbsId] = useState<string | null>(localStorage.getItem('VBS_USER_ID'));
   const [userControl, setUserControl] = useState<VBSUserControl | null>(null);
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
+
+  useEffect(() => {
+    let interval: any;
+    if (syncStartTime) {
+      interval = setInterval(() => {
+        setSyncElapsedTime(Math.floor((Date.now() - syncStartTime) / 1000));
+      }, 1000);
+    } else {
+      setSyncElapsedTime(0);
+    }
+    return () => clearInterval(interval);
+  }, [syncStartTime]);
 
   useEffect(() => {
     if (!vbsId) {
@@ -97,8 +114,8 @@ export default function App() {
             isUnlimited: false,
             isBlocked: false,
             membershipStatus: 'standard',
-            updatedAt: new Date()
-          };
+            updatedAt: serverTimestamp()
+          } as any;
           setDoc(doc(db, 'user_controls', vbsId), initialControl).catch(err => {
             console.error("Failed to initialize user control:", err);
           });
@@ -306,12 +323,14 @@ export default function App() {
         setUserId(user.uid);
         setIsAuthReady(true);
       } else {
-        signInAnonymously(auth).then(() => {
-          setIsAuthReady(true);
+        signInAnonymously(auth).then((result) => {
+          if (result.user) {
+            setUserId(result.user.uid);
+            setIsAuthReady(true);
+          }
         }).catch((err) => {
           console.error("Failed to sign in anonymously (Silent Auth Fallback):", err);
-          // Proceed anyway to allow UI testing
-          setIsAuthReady(true);
+          // Don't set isAuthReady to true if it failed, stay in loading state
         });
       }
     });
@@ -341,7 +360,7 @@ export default function App() {
         try {
           await setDoc(doc(db, 'sessions', auth.currentUser!.uid), {
             accessCode: accessCode,
-            createdAt: new Date().toISOString()
+            createdAt: serverTimestamp()
           });
           console.log('Session synced for access code:', accessCode);
         } catch (e) {
@@ -442,7 +461,7 @@ export default function App() {
 
   // Listen for Global Rules
   useEffect(() => {
-    if (!isAccessGranted || !isAuthReady) {
+    if (!isAccessGranted || !isAuthReady || !auth.currentUser) {
       setGlobalRules([]);
       return;
     }
@@ -488,9 +507,9 @@ export default function App() {
             label: 'Default Admin',
             isActive: true,
             role: 'admin',
-            createdAt: new Date().toISOString(),
+            createdAt: serverTimestamp(),
             createdBy: 'system'
-          };
+          } as any;
           await setDoc(doc(db, 'vlogs_users', defaultAdmin.id), defaultAdmin);
         }
 
@@ -504,9 +523,9 @@ export default function App() {
             label: 'Master Admin',
             isActive: true,
             role: 'admin',
-            createdAt: new Date().toISOString(),
+            createdAt: serverTimestamp(),
             createdBy: 'system'
-          };
+          } as any;
           await setDoc(doc(db, 'vlogs_users', masterAdmin.id), masterAdmin);
         }
         console.log('Admin seeding check completed.');
@@ -737,7 +756,7 @@ export default function App() {
               await addDoc(collection(db, 'globalRules'), {
                 original: original.trim(),
                 replacement: replacement.trim(),
-                createdAt: new Date().toISOString()
+                createdAt: serverTimestamp()
               });
               setToast({ message: 'Global rule added successfully!', type: 'success' });
               setTimeout(() => setToast(null), 3000);
@@ -776,7 +795,7 @@ export default function App() {
     }
   };
 
-  const handleGenerate = async () => {
+  const handleGenerate = async (retryAttempt = 0) => {
     console.log("App: Generate Voice Button Clicked");
     
     if (!text.trim()) {
@@ -797,10 +816,24 @@ export default function App() {
       }
     }
 
+    // [DURATION LOCK ENFORCEMENT]
+    // Maintain 1:46 limit for standard users.
+    const isAdmin = accessCode === 'saw_vlogs_2026' || profile?.role === 'admin';
+    let finalTargetDuration = config.targetDuration;
+    
+    if (!isAdmin) {
+      // Force 1:46 for standard users
+      finalTargetDuration = { minutes: 1, seconds: 46 };
+      if (config.targetDuration?.minutes !== 1 || config.targetDuration?.seconds !== 46) {
+        setConfig(prev => ({ ...prev, targetDuration: { minutes: 1, seconds: 46 } }));
+      }
+    }
+
+    const totalTargetSeconds = (finalTargetDuration?.minutes || 0) * 60 + (finalTargetDuration?.seconds || 0);
+
     // Direct Fetching from LocalStorage as requested - Strict Validation
     const effectiveKey = getEffectiveApiKey();
     
-    const totalTargetSeconds = (config.targetDuration?.minutes || 0) * 60 + (config.targetDuration?.seconds || 0);
     if (totalTargetSeconds <= 0) {
       setError('Please set a target duration of at least 1 second.');
       return;
@@ -823,6 +856,9 @@ export default function App() {
     setError(null);
     setResult(null);
     setEngineStatus('ready');
+    setSyncProgress(0);
+    setSyncStartTime(Date.now());
+    setSyncElapsedTime(0);
 
     console.log("App: Starting voiceover generation process with key...");
 
@@ -831,23 +867,22 @@ export default function App() {
         const isMock = systemConfig?.mock_mode || false;
         const ttsService = new GeminiTTSService(effectiveKey);
         
+        const currentController = new AbortController();
+        setAbortController(currentController);
+
         console.log("App: Applying pronunciation rules...");
-        // Apply pronunciation rules sequentially: Default -> Global Admin -> User Custom
         let processedText = text;
         
-        // 1. Default Rules
         DEFAULT_RULES.forEach(rule => {
           const regex = new RegExp(rule.original, 'gi');
           processedText = processedText.replace(regex, rule.replacement);
         });
 
-        // 2. Global Admin Rules
         globalRules.forEach(rule => {
           const regex = new RegExp(rule.original, 'gi');
           processedText = processedText.replace(regex, rule.replacement);
         });
         
-        // 3. User Custom Rules
         customRules.split('\n').forEach((line) => {
           const parts = line.split('->').map(p => p.trim());
           if (parts.length === 2) {
@@ -856,108 +891,117 @@ export default function App() {
           }
         });
 
-        console.log("App: Text processed, calling TTS service...");
-        const audioResult = await ttsService.generateTTS(processedText, config, isMock);
+        const totalTargetSeconds = finalTargetDuration ? (finalTargetDuration.minutes * 60 + finalTargetDuration.seconds) : 0;
         
-        if (audioResult.isSimulation) {
-          console.warn("App: Received simulation result (fallback triggered)");
-          setError("Note: Real API call failed or timed out. Showing simulation result for testing.");
-        } else {
-          console.log("App: TTS generation successful, updating state...");
-        }
+        // [60S PERSISTENCE WRAPPER - COMMANDER ORDER]
+        const generationPromise = ttsService.generateTTS(
+          processedText, 
+          { ...config, targetDuration: finalTargetDuration }, 
+          isMock,
+          (progress) => setSyncProgress(progress),
+          currentController.signal
+        );
+
+        console.log("App: Calling TTS service with 60s Persistent logic...");
+        setIsSyncingTempo(true);
         
+        const audioResult = await generationPromise;
+        
+        // IMMEDIATE RELEASE: Show result before any DB writes
+        setIsSyncingTempo(false);
+        setSyncStartTime(null);
         setResult(audioResult);
+        setError(null); // Clear any previous errors
         setEngineStatus('ready');
-
-        // Log successful TTS process
-        if (accessCode && !audioResult.isSimulation) {
-          logActivity(accessCode, 'tts', `Generated prompt: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
+        setIsLoading(false); 
+        setAbortController(null);
+        
+        // BACKGROUND TASKS: Non-blocking
+        if (accessCode) {
+          logActivity(accessCode, 'tts', `Generated: ${text.substring(0, 50)}`).catch(() => {});
         }
 
-        // Save to History (Asynchronous if enabled)
-        if (saveToHistory && accessCode && !audioResult.isSimulation) {
-          console.log("App: Saving to history (Asynchronous)...");
-          // We don't await this to ensure immediate result display
+        if (saveToHistory && accessCode) {
           const saveHistory = async () => {
             try {
-              // 1. Upload Audio to Storage
               const audioFileName = `audio/${accessCode}/${Date.now()}.wav`;
               const audioRef = ref(storage, audioFileName);
               await uploadString(audioRef, audioResult.audioData, 'base64');
               const audioStorageUrl = await getDownloadURL(audioRef);
 
-              // 2. Upload SRT to Storage
               const srtFileName = `srt/${accessCode}/${Date.now()}.srt`;
               const srtRef = ref(storage, srtFileName);
               await uploadString(srtRef, audioResult.srtContent);
               const srtStorageUrl = await getDownloadURL(srtRef);
 
-              // 3. Save to Firestore
               await addDoc(collection(db, 'history'), {
                 userId: accessCode,
                 text: text.length > 1000 ? text.substring(0, 1000) + '...' : text,
                 audioStorageUrl: audioStorageUrl,
                 srtStorageUrl: srtStorageUrl,
-                createdAt: new Date().toISOString(),
+                createdAt: serverTimestamp(),
                 config: config
               });
               
-              // Update total generations
               await updateDoc(doc(db, 'settings', 'global'), {
                 total_generations: (globalSettings.total_generations || 0) + 1
               });
-              console.log("App: History saved successfully in background");
             } catch (storageErr) {
-              console.error('Error saving to history in background:', storageErr);
+              console.error('Background Save Error:', storageErr);
             }
           };
-          
           saveHistory();
         }
       } catch (err: any) {
-        console.error("App: Generation failed with error:", err);
-        const isRateLimit = err.message === 'RATE_LIMIT_EXHAUSTED' || 
-                          (err.status === 429) || 
-                          (err.message && err.message.includes('429'));
+        setIsSyncingTempo(false);
+        setSyncStartTime(null);
+        setIsLoading(false);
+        setAbortController(null);
 
+        if (err.message === 'AbortError' || err.name === 'AbortError') {
+          console.log("App: Generation cancelled by user");
+          setEngineStatus('ready');
+          return;
+        }
+        if (err.message?.startsWith('TEXT_TOO_LONG')) {
+          const parts = err.message.split('|');
+          setError(`${t('generate.textTooLong')} (${parts[1]}/${parts[2]})`);
+          return;
+        }
+        
+        const isRateLimit = err.message === 'RATE_LIMIT_EXHAUSTED' || err.status === 429;
         if (isRateLimit && retryAttempt < 1) {
           setEngineStatus('cooling');
           setRetryCountdown(10);
-          
-          // Start countdown
           const timer = setInterval(() => {
             setRetryCountdown(prev => {
-              if (prev <= 1) {
-                clearInterval(timer);
-                return 0;
-              }
+              if (prev <= 1) { clearInterval(timer); return 0; }
               return prev - 1;
             });
           }, 1000);
-
-          // Auto-retry after 10 seconds
-          setTimeout(() => {
-            runGeneration(retryAttempt + 1);
-          }, 10000);
+          setTimeout(() => runGeneration(retryAttempt + 1), 10000);
           return;
         }
 
         if (isRateLimit) {
           setEngineStatus('limit');
-          setError("Your API Key has reached its temporary limit. The system will resume shortly.");
+          setError("API Rate Limit hit. System will resume shortly.");
         } else {
           setError(err.message || 'An unexpected error occurred.');
-          showToast('Generation failed. Please check your API key and connection.', 'error');
+          showToast('Generation failed. Check API key/connection.', 'error');
         }
-      } finally {
-        if (retryAttempt >= 0) { // Only set loading false if we're not waiting for retry
-          // Actually, we want to keep loading true during cooling
-        }
-      }
+      } 
     };
 
-    await runGeneration();
-    setIsLoading(false);
+    try {
+      await runGeneration();
+    } catch (criticalErr) {
+      console.error("Critical Generation Error:", criticalErr);
+      setError("A critical error occurred. Please try again.");
+    } finally {
+      setIsLoading(false);
+      setIsSyncingTempo(false);
+    }
   };
 
   const handleDeleteHistory = async (id: string) => {
@@ -1200,8 +1244,10 @@ export default function App() {
         toggleTheme={() => setIsDarkMode(!isDarkMode)} 
         onOpenTools={() => setIsApiKeyModalOpen(true)}
         isAccessGranted={isAccessGranted}
-        isAdmin={accessCode === 'saw_vlogs_2026'}
+        isAdmin={isVbsAdmin}
         onLogout={handleLogout}
+        profile={profile}
+        userControl={userControl}
       />
 
       <main className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-8 overflow-x-hidden">
@@ -1323,8 +1369,8 @@ export default function App() {
                 id="generate"
                 active={activeTab === 'generate'}
                 onClick={() => setActiveTab('generate')}
-                icon={<Wand2 size={18} />}
-                label={t('nav.generate')}
+                icon={<Mic2 size={18} />}
+                label={t('nav.studio')}
                 tooltip={t('tooltips.generate')}
               />
               <NavTab
@@ -1387,6 +1433,7 @@ export default function App() {
                       showToast={showToast}
                       engineStatus={engineStatus}
                       retryCountdown={retryCountdown}
+                      selectedModel={config.model}
                     />
                     
                     {/* Default Pronunciation Rules Table */}
@@ -1410,7 +1457,13 @@ export default function App() {
 
                   {/* Right Column - Config */}
                   <div className="lg:col-span-5 space-y-8">
-                    <VoiceConfig config={config} setConfig={setConfig} isDarkMode={isDarkMode} />
+                    <VoiceConfig 
+                      config={config} 
+                      setConfig={setConfig} 
+                      isDarkMode={isDarkMode} 
+                      isAdmin={profile?.role === 'admin'}
+                      selectedModel={config.model}
+                    />
 
                     <div className="space-y-4">
                       <div className="flex items-center justify-between bg-white/50 backdrop-blur dark:bg-slate-900/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm transition-colors duration-300">
@@ -1419,8 +1472,8 @@ export default function App() {
                             <History size={18} />
                           </div>
                           <div>
-                            <p className="text-sm font-bold text-slate-900 dark:text-white">မှတ်တမ်းသိမ်းဆည်းမည်</p>
-                            <p className="text-[10px] text-slate-500 dark:text-slate-400">Keep a record of this generation for later access</p>
+                            <p className="text-sm font-bold text-slate-900 dark:text-white">{t('generate.saveToHistory')}</p>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400">{t('generate.saveToHistoryDesc')}</p>
                           </div>
                         </div>
                         <button
@@ -1482,69 +1535,99 @@ export default function App() {
                       </div>
 
                       <button
-                        onClick={handleGenerate}
-                        disabled={isLoading}
-                        className={`w-full py-6 rounded-[24px] font-bold text-xl shadow-2xl flex items-center justify-center gap-4 transition-all active:scale-[0.98] bg-brand-purple hover:bg-brand-purple/90 text-white shadow-brand-purple/40`}
+                        onClick={isLoading ? () => abortController?.abort() : handleGenerate}
+                        className={`w-full py-6 rounded-[24px] font-bold text-xl shadow-2xl flex items-center justify-center gap-4 transition-all active:scale-[0.98] ${
+                          isLoading 
+                            ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20 shadow-none' 
+                            : 'bg-brand-purple hover:bg-brand-purple/90 text-white shadow-brand-purple/40'
+                        }`}
                       >
                         {isLoading ? (
-                          <div className="flex items-center gap-1 h-6">
-                            {[...Array(4)].map((_, i) => (
-                              <motion.div
-                                key={i}
-                                className="w-1.5 bg-white rounded-full"
-                                animate={{
-                                  height: [10, 24, 10],
-                                }}
-                                transition={{
-                                  duration: 0.6,
-                                  repeat: Infinity,
-                                  delay: i * 0.1,
-                                }}
-                              />
-                            ))}
+                          <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-1 h-6">
+                              {[...Array(4)].map((_, i) => (
+                                <motion.div
+                                  key={i}
+                                  className="w-1.5 bg-rose-500 rounded-full"
+                                  animate={{
+                                    height: [10, 24, 10],
+                                  }}
+                                  transition={{
+                                    duration: 0.6,
+                                    repeat: Infinity,
+                                    delay: i * 0.1,
+                                  }}
+                                />
+                              ))}
+                            </div>
+                            <span className="animate-pulse">{t('generate.generating')}</span>
+                            <div className="ml-4 px-3 py-1 bg-rose-500 text-white text-[10px] font-black uppercase tracking-widest rounded-lg flex items-center gap-2">
+                              <XCircle size={14} /> Stop
+                            </div>
                           </div>
                         ) : (
-                          <Zap size={28} fill="currentColor" />
+                          <>
+                            <Wand2 size={24} /> {t('generate.generateBtn')}
+                          </>
                         )}
-                        <div className="flex flex-col items-center">
+                      </button>
+                      <div className="flex flex-col items-center">
                           <span className="flex items-baseline gap-3">
-                            အသံနှင့် စာတန်းထိုး ထုတ်ယူမည်
+                            {isSyncingTempo ? (
+                              <div className="flex flex-col items-center gap-1">
+                                <span className="flex items-center gap-2">
+                                  {t('generate.syncingTempo')}
+                                  {syncProgress > 0 && <span className="text-sm font-mono">{syncProgress}%</span>}
+                                </span>
+                                {syncElapsedTime > 10 && (
+                                  <motion.span 
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                    className="text-[10px] font-medium opacity-70 animate-pulse"
+                                  >
+                                    {t('generate.stillProcessing')}
+                                  </motion.span>
+                                )}
+                              </div>
+                            ) : (
+                              "အသံနှင့် စာတန်းထိုး ထုတ်ယူမည်"
+                            )}
                             <span className="text-sm font-medium opacity-60">
                               ({Math.ceil(text.length / 3000) || 1} {Math.ceil(text.length / 3000) > 1 ? 'chunks' : 'chunk'})
                             </span>
                           </span>
                         </div>
-                      </button>
                     </div>
 
-                    {/* AI Result Area - Hidden until generated */}
-                    <AnimatePresence>
-                      {(isLoading || (result && activeTab === 'generate')) && (
-                        <motion.div
-                          initial={{ opacity: 0, y: 40, scale: 0.98 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: 20 }}
-                          transition={{ 
-                            type: "spring", 
-                            stiffness: 100, 
-                            damping: 20,
-                            duration: 0.6 
-                          }}
-                          id="output-preview-container"
-                          className="mt-8"
-                        >
-                          <OutputPreview 
-                            result={result} 
-                            isLoading={isLoading} 
-                            globalVolume={config.volume}
-                            engineStatus={engineStatus}
-                            retryCountdown={retryCountdown}
-                            targetDuration={config.targetDuration}
-                            showToast={showToast}
-                          />
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                        <AnimatePresence>
+                          {(isLoading || error || (result && activeTab === 'generate')) && (
+                            <motion.div
+                              initial={{ opacity: 0, y: 40, scale: 0.98 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: 20 }}
+                              transition={{ 
+                                type: "spring", 
+                                stiffness: 100, 
+                                damping: 20,
+                                duration: 0.6 
+                              }}
+                              id="output-preview-container"
+                              className="mt-8"
+                            >
+                              <OutputPreview 
+                                result={result} 
+                                isLoading={isLoading} 
+                                error={error}
+                                onRetry={() => handleGenerate(0)}
+                                globalVolume={config.volume}
+                                engineStatus={engineStatus}
+                                retryCountdown={retryCountdown}
+                                targetDuration={config.targetDuration}
+                                showToast={showToast}
+                              />
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                   </div>
                 </motion.div>
               )}
@@ -1565,11 +1648,14 @@ export default function App() {
                       <h3 className="text-2xl font-bold text-slate-900 dark:text-white">
                         {isExpired ? "သင့်အကောင့် သက်တမ်းကုန်ဆုံးသွားပါပြီ" : "ဤသည်မှာ Premium Feature ဖြစ်ပါသည်။"}
                       </h3>
-                      <p className="text-slate-500 dark:text-slate-400 leading-relaxed">
-                        {isExpired 
-                          ? "သင့်အကောင့် သက်တမ်းကုန်ဆုံးသွားပါပြီ။ အသုံးပြုလိုပါက Admin ထံ ဆက်သွယ်၍ သက်တမ်းတိုးပါ။" 
-                          : `အသုံးပြုလိုပါက သင်၏ User ID [${vbsId}] ကို Admin ထံပေးပို့၍ ခွင့်ပြုချက်တောင်းခံပါ။`}
-                      </p>
+                        <p className="text-slate-500 dark:text-slate-400 leading-relaxed">
+                          {isExpired 
+                            ? "သင့်အကောင့် သက်တမ်းကုန်ဆုံးသွားပါပြီ။ အသုံးပြုလိုပါက Admin ထံ ဆက်သွယ်၍ သက်တမ်းတိုးပါ။" 
+                            : (vbsId === 'saw_vlogs_2026' || vbsId?.includes('saw_vlogs')
+                                ? "အသုံးပြုလိုပါက Admin ထံသို့ ခွင့်ပြုချက်တောင်းခံပါ။" 
+                                : `အသုံးပြုလိုပါက သင်၏ User ID [${vbsId}] ကို Admin ထံပေးပို့၍ ခွင့်ပြုချက်တောင်းခံပါ။`
+                              )}
+                        </p>
                       <div className="pt-4">
                         <button 
                           onClick={() => setActiveTab('tools')}
@@ -1844,7 +1930,7 @@ export default function App() {
                                 <button 
                                   onClick={() => handleDeleteHistory(item.id)}
                                   className="p-3 bg-rose-500/10 text-rose-500 rounded-[14px] hover:bg-rose-500 hover:text-white transition-all border border-rose-500/20 shadow-sm"
-                                  title={t('common.delete')}
+                                  title={t('history.delete')}
                                 >
                                   <Trash2 size={18} />
                                 </button>
@@ -1867,16 +1953,19 @@ export default function App() {
                   className="max-w-5xl mx-auto space-y-8"
                 >
                   {/* Profile Card */}
-                  <div className="glass-card rounded-[32px] p-8 sm:p-12 shadow-2xl transition-all duration-300">
+                  <div className="glass-card rounded-[32px] p-8 sm:p-12 shadow-2xl transition-all duration-300 relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-brand-purple/5 blur-[50px] -z-10" />
                     <div className="flex flex-col lg:flex-row items-center lg:items-start gap-8 lg:gap-10 text-center lg:text-left">
                       <div className="w-24 h-24 sm:w-32 sm:h-32 bg-gradient-to-br from-brand-purple to-purple-700 text-white rounded-[32px] flex items-center justify-center text-4xl sm:text-5xl font-bold shadow-2xl shadow-brand-purple/30 border border-white/10 shrink-0">
-                        {accessCode?.charAt(0).toUpperCase() || 'V'}
+                        {accessCode === 'saw_vlogs_2026' ? 'V' : (accessCode?.charAt(0).toUpperCase() || 'V')}
                       </div>
                       <div className="flex-1 w-full space-y-4">
                         <div className="flex flex-col lg:flex-row items-center gap-4">
-                          <h3 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white tracking-tight">User ID: {accessCode}</h3>
+                          <h3 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white tracking-tight">
+                            {accessCode === 'saw_vlogs_2026' ? 'Cloud Narrator Official' : t('settings.title')}
+                          </h3>
                           <span className="flex items-center gap-2 px-4 py-1.5 rounded-full text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.15em] border bg-emerald-500/10 text-emerald-500 border-emerald-500/20 shadow-sm">
-                            <CheckCircle2 size={14} /> Authorized Access
+                            <CheckCircle2 size={14} /> AUTHORIZED
                           </span>
                         </div>
                         <div className="flex flex-wrap items-center justify-center lg:justify-start gap-6 text-slate-500 dark:text-slate-400">
@@ -1886,31 +1975,7 @@ export default function App() {
                           </div>
                           <div className="flex items-center gap-2 text-sm font-medium">
                             <ShieldCheck size={16} className="text-brand-purple" />
-                            {isPremium ? 'အဆင့်မြင့် (Premium) အသုံးပြုသူ' : 'သာမန် (Standard) အသုံးပြုသူ'}
-                          </div>
-                          <div className="flex items-center gap-2 text-sm font-medium">
-                            <Calendar size={16} className="text-brand-purple" />
-                            {isVbsAdmin ? (
-                              "သက်တမ်း: Lifetime Premium"
-                            ) : (userControl?.membershipStatus === 'premium' || userControl?.isUnlimited) ? (
-                              <div className="flex items-center gap-2">
-                                <span>အကောင့်သက်တမ်းကုန်ဆုံးရက်: {userControl.expiryDate ? (
-                                  (() => {
-                                    try {
-                                      const d = new Date(userControl.expiryDate);
-                                      return isNaN(d.getTime()) ? 'မာစတာအကောင့် (Master)' : d.toLocaleDateString('en-GB');
-                                    } catch(e) { return 'မာစတာအကောင့် (Master)'; }
-                                  })()
-                                ) : 'မာစတာအကောင့် (Master)'}</span>
-                                {daysUntilExpiry !== null && daysUntilExpiry <= 3 && daysUntilExpiry >= 0 && (
-                                  <span className="px-2 py-0.5 bg-amber-500/10 text-amber-500 rounded-md text-[10px] font-bold animate-pulse border border-amber-500/20">
-                                    {daysUntilExpiry === 0 ? "ယနေ့ ကုန်ဆုံးပါမည်" : `${daysUntilExpiry} ရက်သာ လိုပါတော့သည်`}
-                                  </span>
-                                )}
-                              </div>
-                            ) : (
-                              "သက်တမ်း: Standard User"
-                            )}
+                            {isPremium ? (language === 'mm' ? 'အဆင့်မြင့် (Premium) အသုံးပြုသူ' : 'Premium Access Active') : (language === 'mm' ? 'သာမန် (Standard) အသုံးပြုသူ' : 'Standard User')}
                           </div>
                         </div>
                         

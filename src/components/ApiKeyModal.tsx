@@ -215,7 +215,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSav
                     </div>
                     <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('keyModal.userIdLabel')}</span>
                   </div>
-                  <span className="text-xs font-mono font-bold text-brand-purple">{vbsId}</span>
+                  <span className="text-xs font-mono font-bold text-brand-purple">{vbsId === 'saw_vlogs_2026' ? 'MASTER ADMIN' : vbsId}</span>
                 </div>
               )}
               <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center uppercase tracking-widest font-bold">

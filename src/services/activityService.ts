@@ -1,18 +1,17 @@
-import { db, addDoc, collection, doc, updateDoc, getDoc } from '../firebase';
+import { db, addDoc, collection, doc, updateDoc, getDoc, serverTimestamp } from '../firebase';
 import { ActivityLog, VBSUserControl } from '../types';
 
 export const logActivity = async (vbsId: string, type: ActivityLog['type'], details: string) => {
   try {
     const now = new Date();
     const today = now.toDateString();
-    const isoString = now.toISOString();
 
     // 1. Add detailed log
     await addDoc(collection(db, 'activity_logs'), {
       vbsId,
       type,
       details,
-      createdAt: isoString
+      createdAt: serverTimestamp()
     });
 
     // 2. Update summary in user_controls
@@ -24,12 +23,12 @@ export const logActivity = async (vbsId: string, type: ActivityLog['type'], deta
       const isNewDay = data.lastUsedDate !== today;
       
       const updates: any = {
-        updatedAt: now,
+        updatedAt: serverTimestamp(),
         lastUsedDate: today
       };
 
       if (type === 'login') {
-        updates.lastLoginAt = isoString;
+        updates.lastLoginAt = serverTimestamp();
       } else {
         // Increment daily tasks for TTS, Transcription, etc.
         const currentTasks = isNewDay ? 0 : (data.dailyTasks || 0);

@@ -8,6 +8,7 @@ export const translations = {
     translator: { en: "AI Translator", mm: "ဘာသာပြန်" },
     transcriber: { en: "Recap Video", mm: "Recap ဗီဒီယို" },
     history: { en: "History", mm: "မှတ်တမ်း" },
+    studio: { en: "Studio", mm: "စတူဒီယို" },
     settings: { en: "Settings", mm: "ပြင်ဆင်ချက်" },
     admin: { en: "Admin", mm: "စီမံခန့်ခွဲသူ" }
   },
@@ -59,9 +60,12 @@ export const translations = {
     coolingDown: { en: "Cooling down...", mm: "စောင့်ဆိုင်းနေပါသည်..." },
     copySuccess: { en: "Copied to clipboard ✨", mm: "စာသားကို ကူးယူပြီးပါပြီ ✨" },
     pasteSuccess: { en: "Text pasted from clipboard 📋", mm: "စာသားကို ထည့်သွင်းပြီးပါပြီ 📋" },
+    syncingTempo: { en: "Syncing Tempo & Duration...", mm: "အနှေးအမြန်နှင့် ကြာချိန်ကို ချိန်ညှိနေပါသည်..." },
     noApiKey: { en: "No API Key found. Please add one in Settings.", mm: "ကျေးဇူးပြု၍ Settings တွင် API Key အရင်ထည့်သွင်းပါ။" },
     rewriteSuccess: { en: "Text rewritten successfully!", mm: "စာသားကို အောင်မြင်စွာ ပြန်လည်ရေးသားပြီးပါပြီ။" },
-    characters: { en: "characters", mm: "စာလုံးရေ" }
+    characters: { en: "characters", mm: "စာလုံးရေ" },
+    stillProcessing: { en: "Still processing, almost done...", mm: "လုပ်ဆောင်နေဆဲဖြစ်သည်၊ မကြာမီပြီးစီးတော့မည်..." },
+    textTooLong: { en: "Text is too long for the selected duration.", mm: "ရွေးချယ်ထားသော ကြာချိန်အတွက် စာသားရှည်လွန်းနေပါသည်။" }
   },
 
   // Voice Config
@@ -82,7 +86,21 @@ export const translations = {
       angry: { en: "Angry", mm: "ဒေါသထွက်သော" },
       sad: { en: "Sad", mm: "ဝမ်းနည်းဖွယ်" },
       whisper: { en: "Whisper", mm: "တိုးတိုးလေး" }
-    }
+    },
+    vocalStyle: { en: "Vocal Style", mm: "အသံဟန်ပန်" },
+    creativity: { en: "Creativity Level", mm: "ဖန်တီးမှုအဆင့်" },
+    advanced: { en: "Advanced AI Settings", mm: "အဆင့်မြင့် AI ချိန်ညှိချက်များ" },
+    grounding: { en: "Google Search Grounding", mm: "Google Search အခြေပြုမည်" },
+    hiFi: { en: "High-Fidelity Audio", mm: "ကြည်လင်ပြတ်သားသော အသံ" },
+    fastTrack: { en: "Fast-Track Processing", mm: "အမြန်လုပ်ဆောင်မည်" },
+    vocalStyles: {
+      neutral: { en: "Neutral", mm: "ပုံမှန်" },
+      expressive: { en: "Expressive", mm: "ဖော်ပြချက်ကောင်းသော" },
+      energetic: { en: "Energetic", mm: "တက်ကြွသော" },
+      calm: { en: "Calm", mm: "တည်ငြိမ်သော" }
+    },
+    creativityLow: { en: "Precise & Factual", mm: "တိကျပြီး အချက်အလက်ကျသော" },
+    creativityHigh: { en: "Dramatic Storytelling", mm: "ဇာတ်လမ်းဆန်သော ပြောဟန်" }
   },
 
   // Translator
@@ -135,17 +153,25 @@ export const translations = {
     downloadSrt: { en: "Download SRT", mm: "SRT ရယူမည်" }
   },
 
-  // History
-  history: {
-    title: { en: "Generation History", mm: "ယခင်မှတ်တမ်းများ" },
-    subtitle: { en: "Manage and re-download your previous professional narrations", mm: "ယခင်ထုတ်ယူထားသော အသံဖိုင်များကို စီမံခန့်ခွဲပြီး ပြန်လည်ရယူပါ" },
-    search: { en: "Search history...", mm: "မှတ်တမ်းများကို ရှာဖွေရန်..." },
-    noHistory: { en: "No generation history found.", mm: "မှတ်တမ်းများ မရှိသေးပါ။" },
-    noResults: { en: "No results found", mm: "ရှာဖွေမှုရလဒ် မတွေ့ပါ" },
-    adjustSearch: { en: "Try adjusting your search or start generating professional voiceovers now!", mm: "ရှာဖွေမှုစကားလုံးကို ပြောင်းလဲကြည့်ပါ သို့မဟုတ် အသံဖိုင်အသစ်များ စတင်ထုတ်ယူလိုက်ပါ" },
-    loading: { en: "Loading your history...", mm: "မှတ်တမ်းများကို ရယူနေပါသည်..." },
-    copyText: { en: "Copy Text", mm: "စာသားကူးယူရန်" },
-    play: { en: "Load to Player", mm: "Player သို့ ပို့မည်" }
+    history: {
+      title: { en: "Generation History", mm: "ယခင်မှတ်တမ်းများ" },
+      subtitle: { en: "Manage and re-download your previous professional narrations", mm: "ယခင်ထုတ်ယူထားသော အသံဖိုင်များကို စီမံခန့်ခွဲပြီး ပြန်လည်ရယူပါ" },
+      search: { en: "Search history...", mm: "မှတ်တမ်းများကို ရှာဖွေရန်..." },
+      delete: { en: "Delete History", mm: "မှတ်တမ်းဖျက်ရန်" },
+      noHistory: { en: "No generation history found.", mm: "မှတ်တမ်းများ မရှိသေးပါ။" },
+      noResults: { en: "No results found", mm: "ရှာဖွေမှုရလဒ် မတွေ့ပါ" },
+      adjustSearch: { en: "Try adjusting your search or start generating professional voiceovers now!", mm: "ရှာဖွေမှုစကားလုံးကို ပြောင်းလဲကြည့်ပါ သို့မဟုတ် အသံဖိုင်အသစ်များ စတင်ထုတ်ယူလိုက်ပါ" },
+      loading: { en: "Loading your history...", mm: "မှတ်တမ်းများကို ရယူနေပါသည်..." },
+      copyText: { en: "Copy Text", mm: "စာသားကူးယူရန်" },
+      play: { en: "Load to Player", mm: "Player သို့ ပို့မည်" },
+      clearScript: { en: "Clear Script", mm: "စာသားများဖျက်မည်" }
+    },
+
+  // Common / UI
+  common: {
+    loading: { en: "Loading", mm: "ဆောင်ရွက်နေပါသည်" },
+    error: { en: "Error", mm: "အမှားအယွင်း" },
+    success: { en: "Success", mm: "အောင်မြင်ပါသည်" }
   },
 
   // Settings / Admin
@@ -155,7 +181,11 @@ export const translations = {
     apiKey: { en: "Personal API Key", mm: "မိမိ၏ API Key" },
     theme: { en: "App Theme", mm: "Theme ပြောင်းရန်" },
     dark: { en: "Dark Mode", mm: "Dark Mode" },
-    light: { en: "Light Mode", mm: "Light Mode" }
+    light: { en: "Light Mode", mm: "Light Mode" },
+    expiryDate: { en: "Expiry Date", mm: "သက်တမ်းကုန်ရက်" },
+    accountStatus: { en: "Account Level", mm: "အဖွဲ့ဝင်အဆင့်" },
+    unlimited: { en: "Unlimited", mm: "အကန့်အသတ်မရှိ" },
+    standardUser: { en: "User", mm: "အသုံးပြုသူ" }
   },
 
   // Admin Dashboard
@@ -180,14 +210,12 @@ export const translations = {
     createBtn: { en: "Create ID", mm: "ID ပြုလုပ်မည်" },
     userList: { en: "Authorized User IDs", mm: "ခွင့်ပြုထားသော User ID များ" },
     searchIds: { en: "Search by ID or Note...", mm: "ID သို့မဟုတ် မှတ်ချက်ဖြင့် ရှာရန်..." },
-    id: { en: "ID", mm: "ID" },
+    id: { en: "Account ID", mm: "ID နှင့် အခြေအနေ" },
+    details: { en: "User Details", mm: "အသုံးပြုသူ အချက်အလက်" },
     note: { en: "Note", mm: "မှတ်ချက်" },
-    usage: { en: "Usage History", mm: "အသုံးပြုမှုမှတ်တမ်း" },
-    membership: { en: "Membership", mm: "အဖွဲ့ဝင်အဆင့်" },
-    premiumAccess: { en: "Premium Access", mm: "Premium ခွင့်ပြုချက်" },
-    expiry: { en: "Expiry Date", mm: "သက်တမ်းကုန်ရက်" },
-    status: { en: "Status", mm: "အခြေအနေ" },
-    actions: { en: "Actions", mm: "လုပ်ဆောင်ချက်" },
+    usage: { en: "Usage Stats", mm: "အသုံးပြုမှု" },
+    membership: { en: "Level & Expiry", mm: "သက်တမ်းနှင့် အဆင့်" },
+    actions: { en: "Actions", mm: "ပြင်ဆင်ရန်" },
     active: { en: "Active", mm: "အသုံးပြုနေဆဲ" },
     deactivated: { en: "Deactivated", mm: "ရပ်ဆိုင်းထားသည်" },
     noUsers: { en: "No users found matching your search.", mm: "ရှာဖွေမှုနှင့် ကိုက်ညီသော အသုံးပြုသူ မတွေ့ပါ" },

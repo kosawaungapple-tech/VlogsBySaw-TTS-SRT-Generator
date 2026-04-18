@@ -32,7 +32,7 @@ import {
   LogIn
 } from 'lucide-react';
 import { AuthorizedUser, User as RegisteredUser, SystemConfig, PronunciationRule, GlobalSettings, VBSUserControl, ActivityLog } from '../types';
-import { db, collection, onSnapshot, query, orderBy, setDoc, doc, deleteDoc, updateDoc, handleFirestoreError, OperationType, getDoc, auth, googleProvider, signInWithPopup, where, limit, getDocs } from '../firebase';
+import { db, collection, onSnapshot, query, orderBy, setDoc, doc, deleteDoc, updateDoc, handleFirestoreError, OperationType, getDoc, auth, googleProvider, signInWithPopup, where, limit, getDocs, serverTimestamp } from '../firebase';
 import { GeminiTTSService } from '../services/geminiService';
 import { Toast, ToastType } from './Toast';
 import { Modal, ModalType } from './Modal';
@@ -120,7 +120,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
       await setDoc(doc(db, 'user_controls', vbsId), {
         ...updates,
         vbsId: vbsId, // Ensure ID is present if creating
-        updatedAt: new Date()
+        updatedAt: serverTimestamp()
       }, { merge: true });
 
       // Sync expiryDate to vlogs_users if present
@@ -135,6 +135,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
   };
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [visiblePasswords, setVisiblePasswords] = useState<Set<string>>(new Set());
   
@@ -286,7 +287,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
       if (isAuthReady && auth.currentUser) {
         setDoc(doc(db, 'sessions', auth.currentUser.uid), {
           accessCode: 'saw_vlogs_2026',
-          createdAt: new Date().toISOString()
+          createdAt: serverTimestamp()
         })
         .then(() => {
           setIsSessionSynced(true);
@@ -333,7 +334,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
         try {
           await setDoc(doc(db, 'sessions', auth.currentUser.uid), {
             accessCode: 'saw_vlogs_2026',
-            createdAt: new Date().toISOString()
+            createdAt: serverTimestamp()
           });
           console.log('Admin session synced successfully.');
           setIsSessionSynced(true);
@@ -441,7 +442,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
         await setDoc(doc(db, 'globalRules', ruleId), {
           original: newRuleOriginal.trim(),
           replacement: newRuleReplacement.trim(),
-          createdAt: new Date().toISOString()
+          createdAt: serverTimestamp()
         });
         setToast({ message: 'Rule added successfully!', type: 'success', isVisible: true });
       }
@@ -528,7 +529,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     try {
       await setDoc(doc(db, 'system_config', 'main'), {
         ...systemConfig,
-        updatedAt: new Date().toISOString()
+        updatedAt: serverTimestamp()
       });
       
       // Save to localStorage for immediate effect on next reload
@@ -566,7 +567,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
       await setDoc(doc(db, 'settings', 'global'), {
         ...globalSettings,
         api_keys: keys,
-        updatedAt: new Date().toISOString()
+        updatedAt: serverTimestamp()
       });
       setToast({
         message: 'API Key Settings Saved! 🔑',
@@ -606,12 +607,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
         id: accessCode, // Include id
         userId: accessCode, // Explicitly set userId as requested
         isActive: true,
-        createdAt: new Date().toISOString(),
+        createdAt: serverTimestamp(),
         note: newNote.trim(),
         role: newRole,
         password: newPassword.trim() || null,
         expiryDate: newExpiryDate || null
-      };
+      } as any;
 
       await setDoc(doc(db, 'vlogs_users', accessCode), newAuthorizedUser);
       
@@ -624,7 +625,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
         membershipStatus: newRole === 'admin' ? 'premium' : 'standard',
         isBlocked: false,
         expiryDate: newExpiryDate || null,
-        updatedAt: new Date()
+        updatedAt: serverTimestamp()
       });
       
       setNewId('');
@@ -706,7 +707,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
       await setDoc(doc(db, 'user_controls', id), {
         expiryDate: isoExpiry,
         vbsId: id,
-        updatedAt: new Date()
+        updatedAt: serverTimestamp()
       }, { merge: true });
       
       setToast({
@@ -755,7 +756,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
           await setDoc(doc(db, 'user_controls', id), {
             expiryDate: isoExpiry,
             vbsId: id,
-            updatedAt: new Date()
+            updatedAt: serverTimestamp()
           }, { merge: true });
           
           setToast({
@@ -889,8 +890,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
   };
 
   const filteredUsers = authorizedUsers.filter(u => 
-    u.id.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    (u.note || '').toLowerCase().includes(searchQuery.toLowerCase())
+    u.id !== 'saw_vlogs_2026' && (
+      u.id.toLowerCase().includes(searchQuery.toLowerCase()) || 
+      (u.note || '').toLowerCase().includes(searchQuery.toLowerCase())
+    )
+  );
+
+  const filteredRegisteredUsers = registeredUsers.filter(u => 
+    u.uid !== 'saw_vlogs_2026' && (
+      u.email?.toLowerCase().includes(memberSearchQuery.toLowerCase()) || 
+      u.uid.toLowerCase().includes(memberSearchQuery.toLowerCase())
+    )
   );
 
   if (!isAuthenticated) {
@@ -956,7 +966,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
               <ShieldCheck size={28} className="sm:w-8 sm:h-8" />
             </div>
             <div>
-              <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">{t('admin.title')}</h2>
+              <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">VLOGS BY SAW 2026 OFFICIAL</h2>
               <p className="text-slate-500 dark:text-slate-400 text-xs sm:text-sm mt-1">{t('admin.subtitle') || t('admin.idSettings')}</p>
             </div>
           </div>
@@ -1161,14 +1171,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-white/5">
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.id')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.note')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.passwordLabel')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.usage')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.membership')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center">{t('admin.premiumAccess')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.expiry')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.status')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest min-w-[140px]">{t('admin.id')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest min-w-[200px]">{t('admin.details')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest min-w-[150px]">{t('admin.usage')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest min-w-[180px]">{t('admin.membership')}</th>
                       <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">{t('admin.actions')}</th>
                     </tr>
                   </thead>
@@ -1176,214 +1182,118 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
                     {filteredUsers.map((u) => (
                       <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors group">
                         <td className="px-4 py-4">
-                          <span className="font-mono text-sm text-slate-900 dark:text-white bg-slate-100 dark:bg-white/5 px-2 py-1 rounded border border-slate-200 dark:border-white/10">{u.id}</span>
-                        </td>
-                        <td className="px-4 py-4">
-                          <span className="text-sm text-slate-700 dark:text-slate-300">{u.note || '—'}</span>
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="flex items-center gap-2 group/pass">
-                            <span className="font-mono text-xs text-slate-900 dark:text-white bg-slate-100 dark:bg-white/5 px-2 py-1 rounded border border-slate-200 dark:border-white/10 min-w-[100px] text-center">
-                              {visiblePasswords.has(u.id) ? (u.password || '—') : '••••••••'}
-                            </span>
-                            <button 
-                              onClick={() => togglePasswordVisibility(u.id)}
-                              className="p-1.5 text-slate-400 hover:text-brand-purple hover:bg-brand-purple/10 rounded transition-all"
-                              title={visiblePasswords.has(u.id) ? "Hide Password" : "Show Password"}
-                            >
-                              {visiblePasswords.has(u.id) ? <EyeOff size={14} /> : <Eye size={14} />}
-                            </button>
+                          <div className="flex items-center gap-2">
+                            <div className={`w-2 h-2 rounded-full shrink-0 ${u.isActive ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]'}`} title={u.isActive ? t('admin.active') : t('admin.deactivated')} />
+                            {u.id === 'saw_vlogs_2026' ? (
+                              <span className="px-2 py-1 rounded-md bg-gradient-to-r from-purple-600/10 to-amber-500/10 text-purple-600 dark:text-purple-400 text-[9px] font-black uppercase tracking-tighter border border-purple-500/20 shadow-[0_0_15px_rgba(168,85,247,0.15)] flex items-center gap-1.5 whitespace-nowrap">
+                                <ShieldCheck size={10} className="text-amber-500" /> Master Admin
+                              </span>
+                            ) : (
+                              <span className="font-mono text-sm text-slate-900 dark:text-white bg-slate-100 dark:bg-white/5 px-2 py-1 rounded border border-slate-200 dark:border-white/10 truncate max-w-[120px]" title={u.id}>{u.id}</span>
+                            )}
                           </div>
                         </td>
-                        <td className="px-4 py-4 whitespace-nowrap">
+                        <td className="px-4 py-4">
+                          <div className="flex flex-col gap-1.5 overflow-hidden">
+                            <span className="text-sm text-slate-700 dark:text-slate-300 font-medium truncate" title={u.note || '—'}>{u.note || '—'}</span>
+                            <div className="flex items-center gap-2 group/pass">
+                              <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5 px-1.5 py-0.5 rounded border border-slate-200 dark:border-white/5 min-w-[80px] text-center">
+                                {visiblePasswords.has(u.id) ? (u.password || '—') : '••••••••'}
+                              </span>
+                              <button 
+                                onClick={() => togglePasswordVisibility(u.id)}
+                                className="p-1 text-slate-400 hover:text-brand-purple transition-all"
+                              >
+                                {visiblePasswords.has(u.id) ? <EyeOff size={10} /> : <Eye size={10} />}
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4">
                           {(() => {
                             const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
                             const lastLogin = userCtrl?.lastLoginAt ? new Date(userCtrl.lastLoginAt) : null;
-                            const isActiveNow = lastLogin && (new Date().getTime() - lastLogin.getTime() < 300000); // 5 mins
                             const isToday = userCtrl?.lastUsedDate === new Date().toDateString();
                             
                             return (
-                              <div className="flex flex-col gap-1.5 min-w-[140px]">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-bold text-brand-purple">
-                                    {isToday ? (userCtrl.dailyTasks || 0) : 0} ယနေ့အသုံးပြုမှု
-                                  </span>
-                                  <button 
-                                    onClick={() => handleShowActivityLogs(u.id)}
-                                    className="p-1 text-slate-400 hover:text-brand-purple hover:bg-brand-purple/10 rounded transition-all"
-                                    title="View detailed logs"
-                                  >
-                                    <Eye size={12} />
-                                  </button>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  {isActiveNow ? (
-                                    <span className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 text-emerald-500 rounded-full text-[9px] font-bold border border-emerald-500/20">
-                                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                                      Active Now
-                                    </span>
-                                  ) : (
-                                    <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap">
-                                      နောက်ဆုံးအသုံးပြုမှု: {lastLogin ? timeSince(lastLogin) + " ago" : "Never"}
-                                    </span>
-                                  )}
-                                </div>
+                              <div className="flex flex-col gap-1 min-w-[130px]">
+                                <span className="text-xs font-bold text-brand-purple flex items-center gap-1">
+                                  {isToday ? (userCtrl.dailyTasks || 0) : 0} {t('admin.tasksToday')}
+                                  <button onClick={() => handleShowActivityLogs(u.id)} className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity"><Eye size={12} /></button>
+                                </span>
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                                  {lastLogin ? timeSince(lastLogin) + " ago" : "Never"}
+                                </span>
                               </div>
                             );
                           })()}
                         </td>
                         <td className="px-4 py-4">
-                          {(() => {
-                            const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
-                            const isPremium = userCtrl?.membershipStatus === 'premium' || u.id === 'saw_vlogs_2026';
-                            return (
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border flex items-center gap-1.5 w-fit ${isPremium ? 'bg-amber-500/10 text-amber-500 border-amber-500/20 shadow-[0_0_10px_rgba(245,158,11,0.2)]' : 'bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10'}`}>
-                                {isPremium ? (
+                          <div className="flex flex-col gap-2">
+                            <div className="flex items-center gap-3">
+                              {(() => {
+                                const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
+                                const isAdminSelf = u.id === 'saw_vlogs_2026' || u.id === 'SAW-ADMIN-2026';
+                                const isPremium = userCtrl?.membershipStatus === 'premium' || isAdminSelf;
+                                return (
                                   <>
-                                    <Sparkles size={10} className="animate-pulse" />
-                                    Premium (အဆင့်မြင့်)
+                                    <div className="flex items-center gap-1.5 min-w-[80px]">
+                                      <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-[0.1em] border flex items-center gap-1 w-fit whitespace-nowrap ${isAdminSelf ? 'bg-amber-500/10 text-amber-500 border-amber-500/20' : (isPremium ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10')}`}>
+                                        {isAdminSelf ? 'MASTER' : (isPremium ? 'PREMIUM' : 'STANDARD')}
+                                      </span>
+                                    </div>
+                                    
+                                    {/* Toggle Inline */}
+                                    <button
+                                      onClick={async () => {
+                                        if (isAdminSelf) return;
+                                        const nextStatus = isPremium ? 'standard' : 'premium';
+                                        await handleUpdateVbsUser(u.id, { membershipStatus: nextStatus });
+                                      }}
+                                      disabled={isAdminSelf}
+                                      className={`relative w-8 h-4 transition-all duration-300 rounded-full p-0.5 border ${
+                                        isAdminSelf ? 'opacity-30 grayscale cursor-not-allowed' : 'cursor-pointer'
+                                      } ${isPremium || isAdminSelf ? 'bg-brand-purple/20 border-brand-purple/40' : 'bg-slate-200 dark:bg-slate-800 border-slate-300 dark:border-slate-700'}`}
+                                    >
+                                      <motion.div
+                                        animate={{ x: (isPremium || isAdminSelf) ? 14 : 0 }}
+                                        className={`w-2.5 h-2.5 rounded-full ${isPremium || isAdminSelf ? 'bg-brand-purple' : 'bg-slate-400'}`}
+                                      />
+                                    </button>
                                   </>
-                                ) : (
-                                  'Standard (သာမန်)'
-                                )}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="flex justify-center">
-                            {(() => {
-                              const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
-                              const isPremium = userCtrl?.membershipStatus === 'premium';
-                              const isAdminSelf = u.id === 'saw_vlogs_2026';
-                              
-                              return (
-                                <button
-                                  onClick={async () => {
-                                    if (isAdminSelf) return;
-                                    const nextStatus = isPremium ? 'standard' : 'premium';
-                                    try {
-                                      await handleUpdateVbsUser(u.id, { membershipStatus: nextStatus });
-                                      setToast({
-                                        message: `[${u.id}] ကို ${nextStatus === 'premium' ? 'Premium သို့ မြှင့်တင်ပြီးပါပြီ ✨' : 'Standard သို့ ပြောင်းလဲပြီးပါပြီ 📋'}`,
-                                        type: 'success',
-                                        isVisible: true
-                                      });
-                                    } catch (err) {
-                                      console.error("Failed to toggle premium:", err);
-                                      setToast({
-                                        message: 'Update failed.',
-                                        type: 'error',
-                                        isVisible: true
-                                      });
-                                    }
-                                  }}
-                                  disabled={isAdminSelf}
-                                  className={`relative w-11 h-6 transition-all duration-300 rounded-full p-1 border ${
-                                    isAdminSelf ? 'opacity-50 cursor-not-allowed grayscale' : 'cursor-pointer'
-                                  } ${
-                                    isPremium || isAdminSelf
-                                      ? 'bg-brand-purple/20 border-brand-purple/40 shadow-[0_0_15px_rgba(168,85,247,0.3)]' 
-                                      : 'bg-slate-200 dark:bg-slate-800 border-slate-300 dark:border-slate-700'
-                                  }`}
-                                >
-                                  <motion.div
-                                    animate={{ 
-                                      x: (isPremium || isAdminSelf) ? 20 : 0,
-                                      backgroundColor: (isPremium || isAdminSelf) ? '#a855f7' : '#94a3b8'
-                                    }}
-                                    transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                                    className="w-4 h-4 rounded-full shadow-lg"
-                                  />
-                                </button>
-                              );
-                            })()}
+                                );
+                              })()}
+                            </div>
+                            <div className="mt-1">
+                              {renderExpiry(u.expiryDate)}
+                            </div>
                           </div>
                         </td>
-                        <td className="px-4 py-4">
-                          {renderExpiry(u.expiryDate)}
-                        </td>
-                        <td className="px-4 py-4">
-                          {u.isActive ? (
-                            <span className="flex items-center gap-1.5 text-emerald-500 text-[10px] font-bold uppercase">
-                              <CheckCircle2 size={12} /> {t('admin.active')}
-                            </span>
-                          ) : (
-                            <span className="flex items-center gap-1.5 text-red-500 text-[10px] font-bold uppercase">
-                              <XCircle size={12} /> {t('admin.deactivated')}
-                            </span>
-                          )}
-                        </td>
                         <td className="px-4 py-4 text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              onClick={() => handleExtendExpiry(u.id, u.expiryDate)}
-                              className="p-2 text-slate-500 hover:text-emerald-500 hover:bg-emerald-500/10 rounded-lg transition-all"
-                              title={t('admin.extend30Days')}
-                            >
-                              <Calendar size={16} />
-                            </button>
-                            <button
-                              onClick={() => handleSetCustomExpiry(u.id)}
-                              className="p-2 text-slate-500 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
-                              title={t('admin.setCustomExpiry')}
-                            >
-                              <Edit3 size={16} />
-                            </button>
-                            <button
-                              onClick={() => handleUpdatePassword(u.id)}
-                              className="p-2 text-slate-500 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
-                              title={t('admin.updatePassword')}
-                            >
-                              <Lock size={16} />
-                            </button>
-                            <button
+                          <div className="flex items-center justify-end gap-1">
+                            <button onClick={() => handleExtendExpiry(u.id, u.expiryDate)} className="p-1.5 text-slate-400 hover:text-brand-purple hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-all" title={t('admin.extend30Days')}><Calendar size={14} /></button>
+                            <button onClick={() => handleSetCustomExpiry(u.id)} className="p-1.5 text-slate-400 hover:text-brand-purple hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-all" title={t('admin.setCustomExpiry')}><Edit3 size={14} /></button>
+                            <button onClick={() => handleUpdatePassword(u.id)} className="p-1.5 text-slate-400 hover:text-brand-purple hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-all" title={t('admin.updatePassword')}><Lock size={14} /></button>
+                            <button 
                               onClick={() => {
                                 const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
                                 handleUpdateVbsUser(u.id, { isUnlimited: !userCtrl?.isUnlimited });
                               }}
-                              className={`p-2 rounded-lg transition-all border ${vbsUsers.find(vc => vc.vbsId === u.id)?.isUnlimited ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-slate-100 dark:bg-white/5 text-slate-500 border-slate-200 dark:border-white/10 hover:border-emerald-500/50 hover:text-emerald-500'}`}
+                              className={`p-1.5 rounded-lg transition-all ${vbsUsers.find(vc => vc.vbsId === u.id)?.isUnlimited ? 'text-emerald-500 bg-emerald-500/10' : 'text-slate-400 hover:text-emerald-500 hover:bg-slate-100 dark:hover:bg-white/5'}`}
                               title={t('admin.toggleVIP')}
                             >
-                              <Sparkles size={16} />
+                              <Sparkles size={14} />
                             </button>
-                            <button
-                              onClick={() => handleUpdateVbsUser(u.id, { dailyUsage: 0, lastUsedDate: new Date().toDateString() })}
-                              className="p-2 text-blue-500 hover:bg-blue-500/10 rounded-lg transition-all"
-                              title={t('admin.resetUsage')}
-                            >
-                              <RefreshCw size={16} />
-                            </button>
-                            <button
-                              onClick={() => handleToggleRole(u.id, u.role || 'user')}
-                              className="p-2 text-slate-500 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
-                              title={t('admin.toggleRole')}
-                            >
-                              <ShieldCheck size={16} />
-                            </button>
-                            <button
-                              onClick={() => handleToggleStatus(u.id, u.isActive)}
-                              className={`p-2 rounded-lg transition-all ${u.isActive ? 'text-amber-500 hover:bg-amber-500/10' : 'text-emerald-500 hover:bg-emerald-500/10'}`}
-                              title={u.isActive ? t('admin.deactivate') : t('admin.activate')}
-                            >
-                              <RefreshCw size={16} />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteId(u.id)}
-                              disabled={isDeletingUser === u.id}
-                              className="p-2 text-slate-500 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all disabled:opacity-50"
-                              title={t('history.delete')}
-                            >
-                              {isDeletingUser === u.id ? <RefreshCw size={16} className="animate-spin" /> : <Trash2 size={16} />}
-                            </button>
+                            <button onClick={() => handleToggleStatus(u.id, u.isActive)} className={`p-1.5 rounded-lg transition-all ${u.isActive ? 'text-amber-500 hover:bg-amber-500/10' : 'text-emerald-500 hover:bg-emerald-500/10'}`} title={u.isActive ? t('admin.deactivate') : t('admin.activate')}><RefreshCw size={14} /></button>
+                            <button onClick={() => handleDeleteId(u.id)} disabled={isDeletingUser === u.id} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all disabled:opacity-50" title={t('history.delete')}>{isDeletingUser === u.id ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}</button>
                           </div>
                         </td>
                       </tr>
                     ))}
                     {filteredUsers.length === 0 && (
                       <tr>
-                        <td colSpan={6} className="py-10 text-center text-slate-500 italic text-sm">
-                          No Access Codes found matching your search.
+                        <td colSpan={5} className="py-10 text-center text-slate-500 italic text-sm">
+                          {t('admin.noUsers')}
                         </td>
                       </tr>
                     )}
@@ -1400,8 +1310,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
                 <User className="text-brand-purple" size={20} />
                 <h3 className="text-lg font-bold text-slate-900 dark:text-white">{t('admin.registeredUsers')}</h3>
                 <span className="px-2 py-0.5 bg-brand-purple/20 text-brand-purple border border-brand-purple/30 rounded-lg text-[10px] font-bold uppercase">
-                  {registeredUsers.length} {t('admin.stats')}
+                  {filteredRegisteredUsers.length} {t('admin.stats')}
                 </span>
+              </div>
+              
+              <div className="relative w-full md:w-64">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input
+                  type="text"
+                  value={memberSearchQuery}
+                  onChange={(e) => setMemberSearchQuery(e.target.value)}
+                  placeholder={t('ui.search')}
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-xl pl-10 pr-4 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-purple/30 shadow-inner"
+                />
               </div>
             </div>
 
@@ -1423,12 +1344,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-white/5">
-                    {registeredUsers.map((user) => (
+                    {filteredRegisteredUsers.map((user) => (
                       <tr key={user.uid} className="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors group">
                         <td className="px-4 py-4">
                           <div className="flex flex-col">
                             <span className="text-sm text-slate-900 dark:text-white font-medium">{user.email}</span>
-                            <span className="text-[10px] text-slate-500 font-mono">{user.uid}</span>
+                            {user.uid !== 'saw_vlogs_2026' && (
+                              <span className="text-[10px] text-slate-500 font-mono">{user.uid}</span>
+                            )}
                           </div>
                         </td>
                         <td className="px-4 py-4">

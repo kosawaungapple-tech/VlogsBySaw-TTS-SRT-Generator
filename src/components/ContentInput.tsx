@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Trash2, Clipboard, Sparkles, RefreshCw, Check } from 'lucide-react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { GeminiTTSService } from '../services/geminiService';
 import { useLanguage } from '../contexts/LanguageContext';
 
@@ -12,6 +12,7 @@ interface ContentInputProps {
   showToast: (message: string, type: 'success' | 'error') => void;
   engineStatus: 'ready' | 'cooling' | 'limit';
   retryCountdown: number;
+  selectedModel: string;
 }
 
 export const ContentInput: React.FC<ContentInputProps> = ({ 
@@ -21,7 +22,8 @@ export const ContentInput: React.FC<ContentInputProps> = ({
   getApiKey, 
   showToast,
   engineStatus,
-  retryCountdown
+  retryCountdown,
+  selectedModel
 }) => {
   const { t } = useLanguage();
   const [isRewriting, setIsRewriting] = useState(false);
@@ -29,6 +31,9 @@ export const ContentInput: React.FC<ContentInputProps> = ({
   const [localRetryCountdown, setLocalRetryCountdown] = useState(0);
 
   const [isCopied, setIsCopied] = useState(false);
+
+  // Gemini 3.1 Flash specific features
+  const isFlash31 = selectedModel === 'gemini-3.1-flash-tts-preview';
 
   const handleCopy = async (textToCopy: string) => {
     try {
@@ -197,13 +202,38 @@ export const ContentInput: React.FC<ContentInputProps> = ({
               onClick={() => setText('')}
               className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 hover:bg-rose-500/10 hover:text-rose-500 transition-all"
             >
-              <Trash2 size={16} /> {t('history.delete')}
+              <Trash2 size={16} /> {t('history.clearScript')}
             </button>
           </div>
         </div>
       </div>
 
       <div className="relative group/textarea">
+        {/* Expression Toolbar - Flash 3.1 Exclusive */}
+        <AnimatePresence>
+          {isFlash31 && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0, marginBottom: 0 }}
+              animate={{ height: 'auto', opacity: 1, marginBottom: 12 }}
+              exit={{ height: 0, opacity: 0, marginBottom: 0 }}
+              className="flex flex-wrap gap-2 overflow-hidden"
+            >
+              <div className="flex flex-wrap gap-2 pb-1">
+                {['(Laughter)', '(Sigh)', '(Applause)', '(Gasp)', '(Whispering)', '(Pause)'].map(exp => (
+                  <button
+                    key={exp}
+                    onClick={() => {
+                        setText(text + (text.endsWith(' ') || text === '' ? '' : ' ') + exp + ' ');
+                    }}
+                    className="px-2.5 py-1.5 bg-brand-purple/5 dark:bg-brand-purple/10 border border-brand-purple/20 dark:border-brand-purple/30 rounded-lg text-[10px] font-bold text-brand-purple hover:bg-brand-purple hover:text-white transition-all active:scale-95 shadow-sm"
+                  >
+                    {exp}
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}

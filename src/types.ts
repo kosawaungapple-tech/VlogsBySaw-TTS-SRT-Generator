@@ -100,6 +100,11 @@ export interface TTSConfig {
   pitch: number;
   volume: number;
   styleInstruction?: string;
+  vocalStyle?: 'Neutral' | 'Expressive' | 'Energetic' | 'Calm';
+  creativityLevel?: number; // 0.2 to 0.8
+  useGrounding?: boolean;
+  highFidelity?: boolean;
+  fastTrack?: boolean;
   targetDuration?: {
     minutes: number;
     seconds: number;
