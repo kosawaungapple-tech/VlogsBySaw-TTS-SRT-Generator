@@ -8,21 +8,6 @@ export const VOICE_OPTIONS: VoiceOption[] = [
   { id: 'fenrir', name: 'Burmese Male (အမျိုးသား) - Fenrir', gender: 'male', voiceName: 'Fenrir' },
 ];
 
-export const MODEL_OPTIONS = [
-  { id: 'gemini-3.1-flash-tts-preview', name: 'Gemini 3.1 Flash (Recommended)' },
-  { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash-Lite (Admin Sync)' },
-  { id: 'gemini-2.5-flash-preview-tts', name: 'Legacy Model (Standard)' },
-];
-
-// Define which voices are supported by which models
-const STABLE_VOICES = ['zephyr', 'kore', 'puck', 'charon', 'fenrir'];
-
-export const MODEL_VOICE_MAPPING: Record<string, string[]> = {
-  'gemini-3.1-flash-tts-preview': STABLE_VOICES,
-  'gemini-3.1-flash-lite-preview': STABLE_VOICES,
-  'gemini-2.5-flash-preview-tts': STABLE_VOICES,
-};
-
 export const DEFAULT_RULES = [
   { id: '1', original: 'Vlogs By Saw', replacement: 'ဗလော့ ဘိုင် စော' },
   { id: '2', original: 'AI', replacement: 'အေအိုင်' },
@@ -36,8 +21,6 @@ export const DEFAULT_RULES = [
 
 export const GEMINI_MODELS = {
   VERIFY: 'gemini-3-flash-preview',
-  LIVE: 'gemini-3.1-flash-live-preview',
-  TTS: 'gemini-3.1-flash-tts-preview',
-  REWRITE: 'gemini-3-flash-preview',
-  TRANSLATE: 'gemini-3-flash-preview',
+  LIVE: 'gemini-2.5-flash-native-audio-preview-12-2025',
+  TTS: 'gemini-2.5-flash-preview-tts',
 };

@@ -12,43 +12,20 @@ export interface User {
 
 export interface AuthorizedUser {
   id: string; // Document ID (Access Code)
-  userId?: string; // Explicit User ID as requested
   createdAt: any; // Firestore Timestamp
   isActive: boolean;
   role: 'admin' | 'user';
   note?: string; // Optional name/label
   label?: string; // Alias for note
   api_key_stored?: string;
-  password?: string; // User password
-  expiryDate?: string; // ISO date string
   createdBy?: string;
-}
-
-export interface VBSUserControl {
-  vbsId: string;
-  dailyUsage: number;
-  lastUsedDate: string;
-  isUnlimited: boolean;
-  isBlocked: boolean;
-  membershipStatus?: 'standard' | 'premium';
-  customLimit?: number;
-  expiryDate?: string; // ISO date string or YYYY-MM-DD
-  updatedAt: any;
-  lastLoginAt?: string;
-  dailyTasks?: number;
 }
 
 export interface GlobalSettings {
   global_system_key?: string;
-  api_keys?: string[]; // List of rotated API keys
-  primary_key?: string;
-  secondary_key?: string;
-  backup_key?: string;
-  allow_admin_keys: boolean; // Toggle to allow users to use admin keys
+  allow_global_key: boolean;
   total_generations: number;
   mock_mode?: boolean;
-  transcription_daily_limit?: number;
-  transcription_public_access?: boolean;
 }
 
 export interface SystemConfig {
@@ -93,22 +70,34 @@ export interface SRTSubtitle {
   text: string;
 }
 
+export interface AudioEffects {
+  echo: {
+    enabled: boolean;
+    delay: number; // in seconds
+    feedback: number; // 0 to 1
+  };
+  reverb: {
+    enabled: boolean;
+    decay: number; // in seconds
+    mix: number; // 0 to 1
+  };
+  pitchShift: {
+    enabled: boolean;
+    semitones: number; // -12 to 12
+  };
+  chorus: {
+    enabled: boolean;
+    rate: number; // in Hz
+    depth: number; // 0 to 1
+  };
+}
+
 export interface TTSConfig {
-  model: string;
   voiceId: string;
   speed: number;
   pitch: number;
   volume: number;
-  styleInstruction?: string;
-  vocalStyle?: 'Neutral' | 'Expressive' | 'Energetic' | 'Calm';
-  creativityLevel?: number; // 0.2 to 0.8
-  useGrounding?: boolean;
-  highFidelity?: boolean;
-  fastTrack?: boolean;
-  targetDuration?: {
-    minutes: number;
-    seconds: number;
-  };
+  effects?: AudioEffects;
 }
 
 export interface AudioResult {
@@ -116,12 +105,4 @@ export interface AudioResult {
   audioData: string; // base64 for download/upload
   srtContent: string;
   subtitles: SRTSubtitle[];
-}
-
-export interface ActivityLog {
-  id?: string;
-  vbsId: string;
-  type: 'login' | 'tts' | 'transcription' | 'translation' | 'recap';
-  details: string;
-  createdAt: string; // ISO string
 }

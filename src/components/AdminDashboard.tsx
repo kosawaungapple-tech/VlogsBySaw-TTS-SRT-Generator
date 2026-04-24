@@ -1,9 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import { 
-  ShieldCheck, 
-  ShieldAlert,
-  Shield,
+  Shield, 
   UserPlus, 
   Trash2, 
   CheckCircle2, 
@@ -13,10 +11,10 @@ import {
   Key,
   Calendar,
   User,
-  Mic2,
   AlertCircle,
   RefreshCw,
   Lock,
+  LogOut,
   Settings,
   Database,
   Send,
@@ -24,28 +22,18 @@ import {
   EyeOff,
   Save,
   Languages,
-  Edit3,
-  FileVideo,
-  Sparkles,
-  History,
-  X,
-  LogIn
+  Edit3
 } from 'lucide-react';
-import { AuthorizedUser, User as RegisteredUser, SystemConfig, PronunciationRule, GlobalSettings, VBSUserControl, ActivityLog } from '../types';
-import { db, collection, onSnapshot, query, orderBy, setDoc, doc, deleteDoc, updateDoc, handleFirestoreError, OperationType, getDoc, auth, googleProvider, signInWithPopup, where, limit, getDocs, serverTimestamp } from '../firebase';
-import { GeminiTTSService } from '../services/geminiService';
+import { AuthorizedUser, User as RegisteredUser, SystemConfig, PronunciationRule } from '../types';
+import { db, collection, onSnapshot, query, orderBy, setDoc, doc, deleteDoc, updateDoc, handleFirestoreError, OperationType, getDoc, auth } from '../firebase';
 import { Toast, ToastType } from './Toast';
-import { Modal, ModalType } from './Modal';
-import { useLanguage } from '../contexts/LanguageContext';
 
 interface AdminDashboardProps {
   isAuthReady: boolean;
-  onAdminLogin?: (code: string) => void;
-  configOnly?: boolean;
+  onLogout: () => void;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onAdminLogin, configOnly = false }) => {
-  const { t } = useLanguage();
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onLogout }) => {
   const [authorizedUsers, setAuthorizedUsers] = useState<AuthorizedUser[]>([]);
   const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -53,155 +41,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
   const [newId, setNewId] = useState('');
   const [newNote, setNewNote] = useState('');
   const [newRole, setNewRole] = useState<'admin' | 'user'>('user');
-  const [newExpiryDate, setNewExpiryDate] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeletingUser, setIsDeletingUser] = useState<string | null>(null);
   const [isVerifyingUser, setIsVerifyingUser] = useState<string | null>(null);
-  const [vbsUsers, setVbsUsers] = useState<VBSUserControl[]>([]);
-  const [isVbsUsersLoading, setIsVbsUsersLoading] = useState(true);
-  const [editingExpiryUser, setEditingExpiryUser] = useState<string | null>(null);
-  const [expiryDateInput, setExpiryDateInput] = useState('');
-  
-  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
-  const [selectedUserLogs, setSelectedUserLogs] = useState<string | null>(null);
-  const [isLogsLoading, setIsLogsLoading] = useState(false);
-
-  const timeSince = (date: Date) => {
-    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
-    if (seconds < 0) return "Just now";
-    let interval = seconds / 31536000;
-    if (interval > 1) return Math.floor(interval) + " years";
-    interval = seconds / 2592000;
-    if (interval > 1) return Math.floor(interval) + " months";
-    interval = seconds / 86400;
-    if (interval > 1) return Math.floor(interval) + " days";
-    interval = seconds / 3600;
-    if (interval > 1) return Math.floor(interval) + " hours";
-    interval = seconds / 60;
-    if (interval > 1) return Math.floor(interval) + " minutes";
-    return Math.floor(seconds) + " seconds";
-  };
-
-  const handleShowActivityLogs = async (vbsId: string) => {
-    setSelectedUserLogs(vbsId);
-    setIsLogsLoading(true);
-    try {
-      const q = query(
-        collection(db, 'activity_logs'), 
-        where('vbsId', '==', vbsId), 
-        orderBy('createdAt', 'desc'),
-        limit(50)
-      );
-      const snapshot = await getDocs(q);
-      const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ActivityLog));
-      setActivityLogs(logs);
-    } catch (err) {
-      console.error("Failed to fetch logs:", err);
-      setToast({ message: t('errors.generic'), type: 'error', isVisible: true });
-    } finally {
-      setIsLogsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    const q = query(collection(db, 'user_controls'), orderBy('updatedAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const users = snapshot.docs.map(doc => doc.data() as VBSUserControl);
-      setVbsUsers(users);
-      setIsVbsUsersLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'user_controls');
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const handleUpdateVbsUser = async (vbsId: string, updates: Partial<VBSUserControl>) => {
-    try {
-      await setDoc(doc(db, 'user_controls', vbsId), {
-        ...updates,
-        vbsId: vbsId, // Ensure ID is present if creating
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-
-      // Sync expiryDate to vlogs_users if present
-      if (updates.expiryDate !== undefined) {
-        await updateDoc(doc(db, 'vlogs_users', vbsId), {
-          expiryDate: updates.expiryDate
-        }).catch(() => {}); // Ignore if doc doesn't exist
-      }
-    } catch (err) {
-      console.error("Failed to update user:", err);
-    }
-  };
-
   const [searchQuery, setSearchQuery] = useState('');
-  const [memberSearchQuery, setMemberSearchQuery] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [visiblePasswords, setVisiblePasswords] = useState<Set<string>>(new Set());
   
-  const togglePasswordVisibility = (id: string) => {
-    const newSet = new Set(visiblePasswords);
-    if (newSet.has(id)) {
-      newSet.delete(id);
-    } else {
-      newSet.add(id);
-    }
-    setVisiblePasswords(newSet);
-  };
-
-  const NO_EXPIRY_LABEL = "သက်တမ်းအကန့်အသတ်မရှိ";
-
-  const renderExpiry = (expiryDate: string | null | undefined) => {
-    const isNoExpiry = !expiryDate;
-    
-    if (isNoExpiry) {
-      return (
-        <span className="flex items-center gap-2 text-[11px] font-bold text-amber-500 whitespace-nowrap bg-amber-500/5 px-2 py-1 rounded-md border border-amber-500/10">
-          <Calendar size={12} className="shrink-0" />
-          {t('admin.expiryUnlimited')}
-        </span>
-      );
-    }
-
-    try {
-      const d = new Date(expiryDate as string);
-      if (isNaN(d.getTime())) {
-        return (
-          <span className="flex items-center gap-2 text-[11px] font-bold text-amber-500 whitespace-nowrap bg-amber-500/5 px-2 py-1 rounded-md border border-amber-500/10">
-            <Calendar size={12} className="shrink-0" />
-            {NO_EXPIRY_LABEL}
-          </span>
-        );
-      }
-
-      const isExpired = d.getTime() < Date.now();
-      const day = d.getDate().toString().padStart(2, '0');
-      const month = (d.getMonth() + 1).toString().padStart(2, '0');
-      const year = d.getFullYear();
-      const formatted = `${day}/${month}/${year}`;
-
-      return (
-        <div className="flex flex-col gap-1 items-start">
-          <span className={`flex items-center gap-2 text-[11px] font-bold whitespace-nowrap px-2 py-1 rounded-md border ${
-            isExpired 
-              ? 'text-rose-500 bg-rose-500/5 border-rose-500/10' 
-              : 'text-emerald-400 bg-emerald-400/5 border-emerald-400/20 shadow-[0_0_10px_rgba(52,211,153,0.1)]'
-          }`}>
-            <Calendar size={12} className="shrink-0" />
-            {formatted}
-          </span>
-          {isExpired && (
-            <span className="text-[8px] text-rose-500 font-black uppercase tracking-widest ml-1 animate-pulse">
-              {t('admin.expired')}
-            </span>
-          )}
-        </div>
-      );
-    } catch (e) {
-      return <span className="text-xs text-slate-400">Invalid</span>;
-    }
-  };
-
   // Toast State
   const [toast, setToast] = useState<{ message: string; type: ToastType; isVisible: boolean }>({
     message: '',
@@ -209,10 +53,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     isVisible: false
   });
   
-  // Admin Auth Protection
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [adminIdInput, setAdminIdInput] = useState('');
-  const [authError, setAuthError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'users' | 'system' | 'rules'>('users');
 
   // System Settings State
@@ -224,13 +64,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     telegram_bot_token: '',
     telegram_chat_id: ''
   });
-  const [globalSettings, setGlobalSettings] = useState<GlobalSettings>({
-    allow_admin_keys: false,
-    total_generations: 0,
-    api_keys: ['']
-  });
   const [isSavingSystem, setIsSavingSystem] = useState(false);
-  const [isSavingKeys, setIsSavingKeys] = useState(false);
   const [isSystemLoading, setIsSystemLoading] = useState(true);
   const [showSecrets, setShowSecrets] = useState(false);
 
@@ -242,70 +76,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
   const [isDeletingRule, setIsDeletingRule] = useState<string | null>(null);
   const [isRulesLoading, setIsRulesLoading] = useState(true);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
-  const [isSessionSynced, setIsSessionSynced] = useState(false);
-
-  // Modal State
-  const [modal, setModal] = useState<{
-    isOpen: boolean;
-    title: string;
-    message: string;
-    type: ModalType;
-    confirmText?: string;
-    cancelText?: string;
-    placeholder?: string;
-    defaultValue?: string;
-    inputType?: 'text' | 'password' | 'date';
-    onConfirm?: (value?: string) => void;
-  }>({
-    isOpen: false,
-    title: '',
-    message: '',
-    type: 'alert',
-  });
-
-  const openModal = (config: Partial<Omit<typeof modal, 'isOpen'>> & { title: string; message: string }) => {
-    setModal({
-      isOpen: true,
-      title: config.title,
-      message: config.message,
-      type: config.type || 'alert',
-      confirmText: config.confirmText || 'Confirm',
-      cancelText: config.cancelText || 'Cancel',
-      placeholder: config.placeholder || 'Enter value...',
-      defaultValue: config.defaultValue || '',
-      inputType: config.inputType || 'text',
-      onConfirm: config.onConfirm,
-    });
-  };
 
   useEffect(() => {
-    const savedAdminAuth = localStorage.getItem('vbs_admin_auth');
-    if (savedAdminAuth === 'saw_vlogs_2026') {
-      setIsAuthenticated(true);
-      
-      // Ensure session is synced on mount if already authenticated
-      if (isAuthReady && auth.currentUser) {
-        setDoc(doc(db, 'sessions', auth.currentUser.uid), {
-          accessCode: 'saw_vlogs_2026',
-          createdAt: serverTimestamp()
-        })
-        .then(() => {
-          setIsSessionSynced(true);
-          if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
-        })
-        .catch(err => {
-          console.error('Failed to sync admin session on mount:', err);
-          // Still set synced if it's a permission error on the session itself (unlikely)
-          // but we want to try listing anyway if we think we are admin
-          setIsSessionSynced(true); 
-          if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
-        });
-      } else if (isAuthReady) {
-        setIsSessionSynced(true);
-        if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
-      }
-    }
-  }, [isAuthReady]);
+    // Authentication is now handled by the parent App component
+    // This component is only rendered if the user is authenticated as admin
+  }, []);
 
   const formatDate = (date: any) => {
     if (!date) return 'N/A';
@@ -319,60 +94,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     }
   };
 
-  const handleAdminAuth = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setAuthError(null);
-    
-    if (adminIdInput === 'saw_vlogs_2026') {
-      setIsAuthenticated(true);
-      localStorage.setItem('vbs_admin_auth', 'saw_vlogs_2026');
-      localStorage.setItem('vbs_access_granted', 'true');
-      localStorage.setItem('vbs_access_code', 'saw_vlogs_2026');
-      
-      // Sync session for security rules
-      if (auth.currentUser) {
-        try {
-          await setDoc(doc(db, 'sessions', auth.currentUser.uid), {
-            accessCode: 'saw_vlogs_2026',
-            createdAt: serverTimestamp()
-          });
-          console.log('Admin session synced successfully.');
-          setIsSessionSynced(true);
-          if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
-        } catch (e) {
-          console.error('Failed to sync admin session:', e);
-          setIsSessionSynced(true); // Proceed anyway
-          if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
-        }
-      } else {
-        setIsSessionSynced(true);
-        if (onAdminLogin) onAdminLogin('saw_vlogs_2026');
-      }
-      
-      setToast({
-        message: 'Admin Access Granted! 🛡️',
-        type: 'success',
-        isVisible: true
-      });
-    } else {
-      setAuthError("Unauthorized Access: Admin Only");
-      setToast({
-        message: 'Unauthorized Access: Admin Only',
-        type: 'error',
-        isVisible: true
-      });
-    }
-  };
-
-  const handleAdminLogout = () => {
-    setIsAuthenticated(false);
-    localStorage.removeItem('vbs_admin_auth');
-  };
 
   useEffect(() => {
-    if (!isAuthenticated || !isAuthReady || !isSessionSynced) return;
+    if (!isAuthReady) return;
 
-    const q = query(collection(db, 'vlogs_users'), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'authorized_users'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const users = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -381,15 +107,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
       setAuthorizedUsers(users);
       setIsLoading(false);
     }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, 'authorized_users');
       setIsLoading(false);
-      handleFirestoreError(err, OperationType.LIST, 'vlogs_users');
     });
 
     return () => unsubscribe();
-  }, [isAuthenticated, isAuthReady, isSessionSynced]);
+  }, [isAuthReady]);
 
   useEffect(() => {
-    if (!isAuthenticated || !isAuthReady || !isSessionSynced) return;
+    if (!isAuthReady) return;
 
     const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -400,15 +126,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
       setRegisteredUsers(users);
       setIsUsersLoading(false);
     }, (err) => {
-      setIsUsersLoading(false);
       handleFirestoreError(err, OperationType.LIST, 'users');
+      setIsUsersLoading(false);
     });
 
     return () => unsubscribe();
-  }, [isAuthenticated, isAuthReady, isSessionSynced]);
+  }, [isAuthReady]);
 
   useEffect(() => {
-    if (!isAuthenticated || !isAuthReady || !isSessionSynced) return;
+    if (!isAuthReady) return;
 
     const unsubscribe = onSnapshot(collection(db, 'globalRules'), (snapshot) => {
       const fetchedRules = snapshot.docs.map(doc => ({
@@ -423,7 +149,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     });
 
     return () => unsubscribe();
-  }, [isAuthenticated, isAuthReady, isSessionSynced]);
+  }, [isAuthReady]);
 
   const handleCreateRule = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -442,7 +168,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
         await setDoc(doc(db, 'globalRules', ruleId), {
           original: newRuleOriginal.trim(),
           replacement: newRuleReplacement.trim(),
-          createdAt: serverTimestamp()
+          createdAt: new Date().toISOString()
         });
         setToast({ message: 'Rule added successfully!', type: 'success', isVisible: true });
       }
@@ -472,28 +198,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
   };
 
   const handleDeleteRule = async (id: string) => {
-    openModal({
-      title: 'Delete Rule',
-      message: 'Are you sure you want to delete this pronunciation rule?',
-      type: 'confirm',
-      confirmText: 'Delete',
-      onConfirm: async () => {
-        setIsDeletingRule(id);
-        try {
-          await deleteDoc(doc(db, 'globalRules', id));
-          setToast({ message: 'Rule deleted', type: 'success', isVisible: true });
-        } catch (error) {
-          handleFirestoreError(error, OperationType.DELETE, `globalRules/${id}`);
-          setToast({ message: 'Failed to delete rule', type: 'error', isVisible: true });
-        } finally {
-          setIsDeletingRule(null);
-        }
-      }
-    });
+    if (!window.confirm('Are you sure you want to delete this rule?')) return;
+    setIsDeletingRule(id);
+    try {
+      await deleteDoc(doc(db, 'globalRules', id));
+      setToast({ message: 'Rule deleted', type: 'success', isVisible: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `globalRules/${id}`);
+      setToast({ message: 'Failed to delete rule', type: 'error', isVisible: true });
+    } finally {
+      setIsDeletingRule(null);
+    }
   };
 
   useEffect(() => {
-    if (!isAuthenticated || !isAuthReady) return;
+    if (!isAuthReady) return;
 
     const fetchSystemConfig = async () => {
       setIsSystemLoading(true);
@@ -503,16 +222,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
         if (docSnap.exists()) {
           setSystemConfig(docSnap.data() as SystemConfig);
         }
-
-        const globalRef = doc(db, 'settings', 'global');
-        const globalSnap = await getDoc(globalRef);
-        if (globalSnap.exists()) {
-          const data = globalSnap.data() as GlobalSettings;
-          setGlobalSettings({
-            ...data,
-            api_keys: data.api_keys || ['']
-          });
-        }
       } catch (err) {
         console.error('Failed to fetch system config:', err);
       } finally {
@@ -521,7 +230,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     };
 
     fetchSystemConfig();
-  }, [isAuthenticated, isAuthReady]);
+  }, [isAuthReady]);
 
   const handleSaveSystemConfig = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -529,7 +238,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     try {
       await setDoc(doc(db, 'system_config', 'main'), {
         ...systemConfig,
-        updatedAt: serverTimestamp()
+        updatedAt: new Date().toISOString()
       });
       
       // Save to localStorage for immediate effect on next reload
@@ -552,49 +261,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     }
   };
 
-  const handleSaveGlobalSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSavingKeys(true);
-    
-    // Sync api_keys array with individual keys for backward compatibility
-    const keys = [
-      globalSettings.primary_key || '',
-      globalSettings.secondary_key || '',
-      globalSettings.backup_key || ''
-    ].filter(k => k.trim());
-
-    try {
-      await setDoc(doc(db, 'settings', 'global'), {
-        ...globalSettings,
-        api_keys: keys,
-        updatedAt: serverTimestamp()
-      });
-      setToast({
-        message: 'API Key Settings Saved! 🔑',
-        type: 'success',
-        isVisible: true
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/global');
-      setToast({
-        message: 'Failed to save API key settings.',
-        type: 'error',
-        isVisible: true
-      });
-    } finally {
-      setIsSavingKeys(false);
-    }
-  };
-
-  const generateRandomPassword = () => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
-    let password = '';
-    for (let i = 0; i < 12; i++) {
-      password += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    setNewPassword(password);
-  };
-
   const handleCreateId = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newId.trim() || isSubmitting) return;
@@ -604,34 +270,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     try {
       const accessCode = newId.trim();
       const newAuthorizedUser = {
-        id: accessCode, // Include id
-        userId: accessCode, // Explicitly set userId as requested
         isActive: true,
-        createdAt: serverTimestamp(),
+        createdAt: new Date().toISOString(),
         note: newNote.trim(),
-        role: newRole,
-        password: newPassword.trim() || null,
-        expiryDate: newExpiryDate || null
-      } as any;
+        role: newRole
+      };
 
-      await setDoc(doc(db, 'vlogs_users', accessCode), newAuthorizedUser);
-      
-      // Also initialize user_controls to sync expiry and initial settings
-      await setDoc(doc(db, 'user_controls', accessCode), {
-        vbsId: accessCode,
-        dailyUsage: 0,
-        lastUsedDate: new Date().toDateString(),
-        isUnlimited: newRole === 'admin',
-        membershipStatus: newRole === 'admin' ? 'premium' : 'standard',
-        isBlocked: false,
-        expiryDate: newExpiryDate || null,
-        updatedAt: serverTimestamp()
-      });
+      await setDoc(doc(db, 'authorized_users', accessCode), newAuthorizedUser);
       
       setNewId('');
       setNewNote('');
-      setNewPassword('');
-      setNewExpiryDate('');
       setNewRole('user');
       setToast({
         message: 'User ID Created Successfully! 🎉',
@@ -639,7 +287,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
         isVisible: true
       });
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.CREATE, `vlogs_users/${newId.trim()}`);
       setToast({
         message: 'Error: Could not create ID. Please try again.',
         type: 'error',
@@ -650,135 +297,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
     }
   };
 
-  const handleUpdatePassword = async (id: string) => {
-    const user = authorizedUsers.find(u => u.id === id);
-    openModal({
-      title: 'Update Password',
-      message: 'Enter a new password for this user:',
-      type: 'prompt',
-      inputType: 'text',
-      defaultValue: user?.password || '',
-      placeholder: 'New password...',
-      confirmText: 'Update',
-      onConfirm: async (password) => {
-        if (!password) return;
-        try {
-          await updateDoc(doc(db, 'vlogs_users', id), {
-            password: password.trim() || null
-          });
-          setToast({
-            message: 'Password Updated ✨',
-            type: 'success',
-            isVisible: true
-          });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
-          setToast({
-            message: 'Failed to update user password.',
-            type: 'error',
-            isVisible: true
-          });
-        }
-      }
-    });
-  };
-
-  const handleExtendExpiry = async (id: string, currentExpiry: string | undefined) => {
-    try {
-      const now = new Date();
-      let baseDate = now;
-      
-      if (currentExpiry) {
-        const current = new Date(currentExpiry);
-        if (current > now) {
-          baseDate = current;
-        }
-      }
-      
-      const newExpiry = new Date(baseDate);
-      newExpiry.setDate(newExpiry.getDate() + 30);
-      const isoExpiry = newExpiry.toISOString();
-      
-      await updateDoc(doc(db, 'vlogs_users', id), {
-        expiryDate: isoExpiry
-      });
-
-      // Sync to user_controls
-      await setDoc(doc(db, 'user_controls', id), {
-        expiryDate: isoExpiry,
-        vbsId: id,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-      
-      setToast({
-        message: 'Subscription Extended 30 Days! 📅',
-        type: 'success',
-        isVisible: true
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
-      setToast({
-        message: 'Failed to extend subscription.',
-        type: 'error',
-        isVisible: true
-      });
-    }
-  };
-
-  const handleSetCustomExpiry = async (id: string) => {
-    openModal({
-      title: 'Set Expiry Date',
-      message: 'Enter custom expiry date (YYYY-MM-DD):',
-      type: 'prompt',
-      inputType: 'date',
-      confirmText: 'Set Expiry',
-      onConfirm: async (dateStr) => {
-        if (!dateStr) return;
-        
-        try {
-          const date = new Date(dateStr);
-          if (isNaN(date.getTime())) {
-            openModal({
-              title: 'Invalid Date',
-              message: 'Invalid date format. Please use YYYY-MM-DD.',
-              type: 'error'
-            });
-            return;
-          }
-          
-          const isoExpiry = date.toISOString();
-
-          await updateDoc(doc(db, 'vlogs_users', id), {
-            expiryDate: isoExpiry
-          });
-
-          // Sync to user_controls
-          await setDoc(doc(db, 'user_controls', id), {
-            expiryDate: isoExpiry,
-            vbsId: id,
-            updatedAt: serverTimestamp()
-          }, { merge: true });
-          
-          setToast({
-            message: 'Custom Expiry Date Set! 📅',
-            type: 'success',
-            isVisible: true
-          });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
-          setToast({
-            message: 'Failed to set custom expiry date.',
-            type: 'error',
-            isVisible: true
-          });
-        }
-      }
-    });
-  };
-
   const handleToggleStatus = async (id: string, currentStatus: boolean) => {
     try {
-      await updateDoc(doc(db, 'vlogs_users', id), {
+      await updateDoc(doc(db, 'authorized_users', id), {
         isActive: !currentStatus
       });
       setToast({
@@ -787,7 +308,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
         isVisible: true
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
+      handleFirestoreError(err, OperationType.UPDATE, `authorized_users/${id}`);
       setToast({
         message: 'Failed to update user status.',
         type: 'error',
@@ -798,7 +319,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
 
   const handleToggleRole = async (id: string, currentRole: 'admin' | 'user') => {
     try {
-      await updateDoc(doc(db, 'vlogs_users', id), {
+      await updateDoc(doc(db, 'authorized_users', id), {
         role: currentRole === 'admin' ? 'user' : 'admin'
       });
       setToast({
@@ -807,7 +328,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
         isVisible: true
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `vlogs_users/${id}`);
+      handleFirestoreError(err, OperationType.UPDATE, `authorized_users/${id}`);
       setToast({
         message: 'Failed to update user role.',
         type: 'error',
@@ -817,32 +338,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
   };
 
   const handleDeleteId = async (id: string) => {
-    openModal({
-      title: 'Delete User ID',
-      message: `Are you sure you want to delete Access Code: ${id}?`,
-      type: 'confirm',
-      confirmText: 'Delete',
-      onConfirm: async () => {
-        setIsDeletingUser(id);
-        try {
-          await deleteDoc(doc(db, 'vlogs_users', id));
-          setToast({
-            message: 'User ID Deleted Successfully!',
-            type: 'success',
-            isVisible: true
-          });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.DELETE, `vlogs_users/${id}`);
-          setToast({
-            message: 'Failed to delete User ID.',
-            type: 'error',
-            isVisible: true
-          });
-        } finally {
-          setIsDeletingUser(null);
-        }
-      }
-    });
+    if (!window.confirm(`Are you sure you want to delete Access Code: ${id}?`)) return;
+
+    setIsDeletingUser(id);
+    try {
+      await deleteDoc(doc(db, 'authorized_users', id));
+      setToast({
+        message: 'User ID Deleted Successfully!',
+        type: 'success',
+        isVisible: true
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `authorized_users/${id}`);
+      setToast({
+        message: 'Failed to delete User ID.',
+        type: 'error',
+        isVisible: true
+      });
+    } finally {
+      setIsDeletingUser(null);
+    }
   };
 
   const handleVerifyUser = async (uid: string) => {
@@ -890,133 +405,63 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
   };
 
   const filteredUsers = authorizedUsers.filter(u => 
-    u.id !== 'saw_vlogs_2026' && (
-      u.id.toLowerCase().includes(searchQuery.toLowerCase()) || 
-      (u.note || '').toLowerCase().includes(searchQuery.toLowerCase())
-    )
+    u.id.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    (u.note || '').toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const filteredRegisteredUsers = registeredUsers.filter(u => 
-    u.uid !== 'saw_vlogs_2026' && (
-      u.email?.toLowerCase().includes(memberSearchQuery.toLowerCase()) || 
-      u.uid.toLowerCase().includes(memberSearchQuery.toLowerCase())
-    )
-  );
 
-  if (!isAuthenticated) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 px-4">
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-md bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 shadow-2xl transition-colors duration-300"
-        >
-          <div className="flex flex-col items-center mb-8">
-            <div className="w-16 h-16 bg-brand-purple/20 text-brand-purple rounded-2xl flex items-center justify-center mb-4 border border-brand-purple/20">
-              <Lock size={32} />
-            </div>
-            <h2 className="text-2xl font-bold text-slate-900 dark:text-white">{t('admin.authTitle')}</h2>
-            <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">{t('admin.authSubtitle')}</p>
-          </div>
-
-          <form onSubmit={handleAdminAuth} className="space-y-6">
-            <div className="space-y-2">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">{t('admin.roleLabel')}</label>
-              <div className="relative">
-                <Shield className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={20} />
-                <input
-                  type="password"
-                  value={adminIdInput}
-                  onChange={(e) => setAdminIdInput(e.target.value)}
-                  placeholder={t('admin.enterCode')}
-                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-4 text-sm text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                  required
-                />
-              </div>
-            </div>
-
-            {authError && (
-              <p className="text-red-500 text-xs font-bold flex items-center gap-1 px-2">
-                <AlertCircle size={12} /> {authError}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              className="w-full py-4 bg-brand-purple text-white rounded-2xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2"
-            >
-              <ShieldCheck size={20} /> {t('admin.unlockBtn')}
-            </button>
-          </form>
-        </motion.div>
-      </div>
-    );
-  }
 
   return (
     <>
-      <div className="max-w-6xl mx-auto space-y-8 p-4 relative">
-      <div className="absolute top-0 right-0 w-64 h-64 bg-brand-purple/5 blur-[100px] -z-10" />
-      
+      <div className="max-w-6xl mx-auto space-y-8 p-4">
       {/* Header */}
-      <div className="premium-glass rounded-[32px] p-5 sm:p-8 shadow-2xl transition-all duration-300 neon-glow-indigo">
+      <div className="bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-8 shadow-2xl transition-colors duration-300">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-6 text-center sm:text-left">
           <div className="flex flex-col sm:flex-row items-center gap-4 sm:gap-6">
             <div className="w-14 h-14 sm:w-16 sm:h-16 bg-brand-purple/20 text-brand-purple rounded-2xl flex items-center justify-center shadow-inner border border-brand-purple/20 shrink-0">
-              <ShieldCheck size={28} className="sm:w-8 sm:h-8" />
+              <Shield size={28} className="sm:w-8 sm:h-8" />
             </div>
             <div>
-              <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">VLOGS BY SAW 2026 OFFICIAL</h2>
-              <p className="text-slate-500 dark:text-slate-400 text-xs sm:text-sm mt-1">{t('admin.subtitle') || t('admin.idSettings')}</p>
+              <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white">Admin Dashboard</h2>
+              <p className="text-slate-500 dark:text-slate-400 text-xs sm:text-sm mt-1">Manage Authorized Access Codes (User IDs)</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto overflow-hidden">
-            {!configOnly && (
-              <div className="flex flex-nowrap overflow-x-auto no-scrollbar bg-slate-100 dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200 dark:border-slate-800 flex-1 sm:flex-initial">
-                <button
-                  onClick={() => {
-                    window.history.pushState({}, '', '/');
-                    window.dispatchEvent(new Event('popstate'));
-                  }}
-                  className="px-3 sm:px-4 py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 whitespace-nowrap"
-                >
-                  <Mic2 size={14} /> {t('nav.studio')}
-                </button>
-                <button
-                  onClick={() => setActiveTab('users')}
-                  className={`px-3 sm:px-4 py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 whitespace-nowrap ${activeTab === 'users' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-                >
-                  <User size={14} /> {t('admin.userManagement')}
-                </button>
-                <button
-                  onClick={() => setActiveTab('system')}
-                  className={`px-3 sm:px-4 py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 whitespace-nowrap ${activeTab === 'system' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-                >
-                  <Settings size={14} /> {t('admin.systemSettings')}
-                </button>
-                <button
-                  onClick={() => setActiveTab('rules')}
-                  className={`px-3 sm:px-4 py-2 rounded-lg text-[10px] sm:text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 whitespace-nowrap ${activeTab === 'rules' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-                >
-                  <Languages size={14} /> {t('admin.pronunciationRules')}
-                </button>
-              </div>
-            )}
+          <div className="flex items-center gap-3 w-full sm:w-auto">
+            <div className="flex bg-slate-100 dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200 dark:border-slate-800">
+              <button
+                onClick={() => setActiveTab('users')}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${activeTab === 'users' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+              >
+                <User size={14} /> Users
+              </button>
+              <button
+                onClick={() => setActiveTab('system')}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${activeTab === 'system' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+              >
+                <Settings size={14} /> System
+              </button>
+              <button
+                onClick={() => setActiveTab('rules')}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${activeTab === 'rules' ? 'bg-white dark:bg-slate-800 text-brand-purple shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+              >
+                <Languages size={14} /> Rules
+              </button>
+            </div>
             <button 
-              onClick={handleAdminLogout}
-              className="px-3 sm:px-4 py-2 sm:py-2.5 bg-slate-100 dark:bg-slate-900/50 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 dark:text-slate-400 text-[10px] sm:text-sm font-bold transition-all whitespace-nowrap"
+              onClick={onLogout}
+              className="px-4 py-2.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-xl text-red-500 text-sm font-bold transition-all flex items-center gap-2"
             >
-              {configOnly ? 'Exit Config' : 'Lock'}
+              <LogOut size={16} /> Logout
             </button>
           </div>
         </div>
       </div>
 
-      {activeTab === 'users' && !configOnly && (
+      {activeTab === 'users' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Create Form */}
         <div className="lg:col-span-4">
-          <div className="premium-glass rounded-[32px] p-5 sm:p-6 shadow-2xl sticky top-8 transition-all duration-300 border border-white/5">
+          <div className="bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl sticky top-8 transition-colors duration-300">
             <div className="flex items-center gap-3 mb-6">
               <UserPlus className="text-brand-purple" size={20} />
               <h3 className="text-lg font-bold text-slate-900 dark:text-white">Create New User ID</h3>
@@ -1053,57 +498,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
               </div>
 
               <div className="space-y-2">
-                <div className="flex justify-between items-center px-1">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Password (Optional)</label>
-                  <button 
-                    type="button"
-                    onClick={generateRandomPassword}
-                    className="text-[10px] font-bold text-brand-purple hover:underline flex items-center gap-1"
-                  >
-                    <RefreshCw size={10} /> Generate
-                  </button>
-                </div>
-                <div className="relative">
-                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                  <input
-                    type="text"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Enter or generate password"
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-3.5 text-sm font-mono text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Expiry Date (Optional)</label>
-                <div className="relative">
-                  <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                  <input
-                    type="date"
-                    value={newExpiryDate}
-                    onChange={(e) => setNewExpiryDate(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pl-12 pr-4 py-3.5 text-sm text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">{t('admin.roleLabel')}</label>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Initial Role</label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => setNewRole('user')}
                     className={`py-3 rounded-xl text-xs font-bold border transition-all ${newRole === 'user' ? 'bg-brand-purple border-brand-purple text-white' : 'bg-slate-100 dark:bg-slate-900/50 border-slate-200 dark:border-slate-800 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
                   >
-                    {t('admin.userRole')}
+                    User
                   </button>
                   <button
                     type="button"
                     onClick={() => setNewRole('admin')}
                     className={`py-3 rounded-xl text-xs font-bold border transition-all ${newRole === 'admin' ? 'bg-brand-purple border-brand-purple text-white' : 'bg-slate-100 dark:bg-slate-900/50 border-slate-200 dark:border-slate-800 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
                   >
-                    {t('admin.adminRole')}
+                    Admin
                   </button>
                 </div>
               </div>
@@ -1113,25 +522,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
                 disabled={isSubmitting || !newId.trim()}
                 className="w-full py-4 bg-brand-purple text-white rounded-xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
               >
-                {isSubmitting ? (
-                  <div className="flex items-center gap-0.5 h-4">
-                    {[...Array(3)].map((_, i) => (
-                      <motion.div
-                        key={i}
-                        className="w-0.5 bg-white rounded-full"
-                        animate={{
-                          height: [4, 12, 4],
-                        }}
-                        transition={{
-                          duration: 0.6,
-                          repeat: Infinity,
-                          delay: i * 0.1,
-                        }}
-                      />
-                    ))}
-                  </div>
-                ) : <Plus size={18} />}
-                {t('admin.createBtn')}
+                {isSubmitting ? <RefreshCw size={18} className="animate-spin" /> : <Plus size={18} />}
+                Create User ID
               </button>
             </form>
           </div>
@@ -1139,13 +531,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
 
         {/* List Table */}
         <div className="lg:col-span-8">
-          <div className="premium-glass rounded-[32px] p-5 sm:p-6 shadow-2xl transition-all duration-300 border border-white/5">
+          <div className="bg-white/50 backdrop-blur dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 sm:p-6 shadow-2xl transition-colors duration-300">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
               <div className="flex items-center gap-3">
                 <Key className="text-brand-purple" size={20} />
-                <h3 className="text-lg font-bold text-slate-900 dark:text-white">{t('admin.userList')}</h3>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">Existing User IDs</h3>
                 <span className="px-2 py-0.5 bg-brand-purple/20 text-brand-purple border border-brand-purple/30 rounded-lg text-[9px] font-bold uppercase">
-                  {authorizedUsers.length} {t('admin.stats')}
+                  {authorizedUsers.length} Total
                 </span>
               </div>
 
@@ -1153,7 +545,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
                 <input
                   type="text"
-                  placeholder={t('admin.searchIds')}
+                  placeholder="Search IDs or notes..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg pl-10 pr-4 py-2.5 text-xs text-slate-900 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
@@ -1164,136 +556,83 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
             {isLoading ? (
               <div className="flex items-center justify-center py-20">
                 <div className="w-8 h-8 border-2 border-brand-purple/20 border-t-brand-purple rounded-full animate-spin" />
-                <p className="ml-3 text-xs font-bold text-slate-500 uppercase tracking-widest">{t('common.loading')}...</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-white/5">
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest min-w-[140px]">{t('admin.id')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest min-w-[200px]">{t('admin.details')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest min-w-[150px]">{t('admin.usage')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest min-w-[180px]">{t('admin.membership')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">{t('admin.actions')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Access Code</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Note</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Role</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Created</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Status</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-white/5">
                     {filteredUsers.map((u) => (
                       <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors group">
                         <td className="px-4 py-4">
-                          <div className="flex items-center gap-2">
-                            <div className={`w-2 h-2 rounded-full shrink-0 ${u.isActive ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]'}`} title={u.isActive ? t('admin.active') : t('admin.deactivated')} />
-                            {u.id === 'saw_vlogs_2026' ? (
-                              <span className="px-2 py-1 rounded-md bg-gradient-to-r from-purple-600/10 to-amber-500/10 text-purple-600 dark:text-purple-400 text-[9px] font-black uppercase tracking-tighter border border-purple-500/20 shadow-[0_0_15px_rgba(168,85,247,0.15)] flex items-center gap-1.5 whitespace-nowrap">
-                                <ShieldCheck size={10} className="text-amber-500" /> Master Admin
-                              </span>
-                            ) : (
-                              <span className="font-mono text-sm text-slate-900 dark:text-white bg-slate-100 dark:bg-white/5 px-2 py-1 rounded border border-slate-200 dark:border-white/10 truncate max-w-[120px]" title={u.id}>{u.id}</span>
-                            )}
+                          <span className="font-mono text-sm text-slate-900 dark:text-white bg-slate-100 dark:bg-white/5 px-2 py-1 rounded border border-slate-200 dark:border-white/10">{u.id}</span>
+                        </td>
+                        <td className="px-4 py-4">
+                          <span className="text-sm text-slate-700 dark:text-slate-300">{u.note || '—'}</span>
+                        </td>
+                        <td className="px-4 py-4">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${u.role === 'admin' ? 'bg-brand-purple/20 text-brand-purple border-brand-purple/30' : 'bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10'}`}>
+                            {u.role || 'user'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-4">
+                          <div className="flex items-center gap-2 text-xs text-slate-500">
+                            <Calendar size={12} />
+                            {new Date(u.createdAt).toLocaleDateString()}
                           </div>
                         </td>
                         <td className="px-4 py-4">
-                          <div className="flex flex-col gap-1.5 overflow-hidden">
-                            <span className="text-sm text-slate-700 dark:text-slate-300 font-medium truncate" title={u.note || '—'}>{u.note || '—'}</span>
-                            <div className="flex items-center gap-2 group/pass">
-                              <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-white/5 px-1.5 py-0.5 rounded border border-slate-200 dark:border-white/5 min-w-[80px] text-center">
-                                {visiblePasswords.has(u.id) ? (u.password || '—') : '••••••••'}
-                              </span>
-                              <button 
-                                onClick={() => togglePasswordVisibility(u.id)}
-                                className="p-1 text-slate-400 hover:text-brand-purple transition-all"
-                              >
-                                {visiblePasswords.has(u.id) ? <EyeOff size={10} /> : <Eye size={10} />}
-                              </button>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4">
-                          {(() => {
-                            const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
-                            const lastLogin = userCtrl?.lastLoginAt ? new Date(userCtrl.lastLoginAt) : null;
-                            const isToday = userCtrl?.lastUsedDate === new Date().toDateString();
-                            
-                            return (
-                              <div className="flex flex-col gap-1 min-w-[130px]">
-                                <span className="text-xs font-bold text-brand-purple flex items-center gap-1">
-                                  {isToday ? (userCtrl.dailyTasks || 0) : 0} {t('admin.tasksToday')}
-                                  <button onClick={() => handleShowActivityLogs(u.id)} className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity"><Eye size={12} /></button>
-                                </span>
-                                <span className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                                  {lastLogin ? timeSince(lastLogin) + " ago" : "Never"}
-                                </span>
-                              </div>
-                            );
-                          })()}
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="flex flex-col gap-2">
-                            <div className="flex items-center gap-3">
-                              {(() => {
-                                const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
-                                const isAdminSelf = u.id === 'saw_vlogs_2026' || u.id === 'SAW-ADMIN-2026';
-                                const isPremium = userCtrl?.membershipStatus === 'premium' || isAdminSelf;
-                                return (
-                                  <>
-                                    <div className="flex items-center gap-1.5 min-w-[80px]">
-                                      <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-[0.1em] border flex items-center gap-1 w-fit whitespace-nowrap ${isAdminSelf ? 'bg-amber-500/10 text-amber-500 border-amber-500/20' : (isPremium ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/10')}`}>
-                                        {isAdminSelf ? 'MASTER' : (isPremium ? 'PREMIUM' : 'STANDARD')}
-                                      </span>
-                                    </div>
-                                    
-                                    {/* Toggle Inline */}
-                                    <button
-                                      onClick={async () => {
-                                        if (isAdminSelf) return;
-                                        const nextStatus = isPremium ? 'standard' : 'premium';
-                                        await handleUpdateVbsUser(u.id, { membershipStatus: nextStatus });
-                                      }}
-                                      disabled={isAdminSelf}
-                                      className={`relative w-8 h-4 transition-all duration-300 rounded-full p-0.5 border ${
-                                        isAdminSelf ? 'opacity-30 grayscale cursor-not-allowed' : 'cursor-pointer'
-                                      } ${isPremium || isAdminSelf ? 'bg-brand-purple/20 border-brand-purple/40' : 'bg-slate-200 dark:bg-slate-800 border-slate-300 dark:border-slate-700'}`}
-                                    >
-                                      <motion.div
-                                        animate={{ x: (isPremium || isAdminSelf) ? 14 : 0 }}
-                                        className={`w-2.5 h-2.5 rounded-full ${isPremium || isAdminSelf ? 'bg-brand-purple' : 'bg-slate-400'}`}
-                                      />
-                                    </button>
-                                  </>
-                                );
-                              })()}
-                            </div>
-                            <div className="mt-1">
-                              {renderExpiry(u.expiryDate)}
-                            </div>
-                          </div>
+                          {u.isActive ? (
+                            <span className="flex items-center gap-1.5 text-emerald-500 text-[10px] font-bold uppercase">
+                              <CheckCircle2 size={12} /> Active
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1.5 text-red-500 text-[10px] font-bold uppercase">
+                              <XCircle size={12} /> Deactivated
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-4 text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            <button onClick={() => handleExtendExpiry(u.id, u.expiryDate)} className="p-1.5 text-slate-400 hover:text-brand-purple hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-all" title={t('admin.extend30Days')}><Calendar size={14} /></button>
-                            <button onClick={() => handleSetCustomExpiry(u.id)} className="p-1.5 text-slate-400 hover:text-brand-purple hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-all" title={t('admin.setCustomExpiry')}><Edit3 size={14} /></button>
-                            <button onClick={() => handleUpdatePassword(u.id)} className="p-1.5 text-slate-400 hover:text-brand-purple hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-all" title={t('admin.updatePassword')}><Lock size={14} /></button>
-                            <button 
-                              onClick={() => {
-                                const userCtrl = vbsUsers.find(vc => vc.vbsId === u.id);
-                                handleUpdateVbsUser(u.id, { isUnlimited: !userCtrl?.isUnlimited });
-                              }}
-                              className={`p-1.5 rounded-lg transition-all ${vbsUsers.find(vc => vc.vbsId === u.id)?.isUnlimited ? 'text-emerald-500 bg-emerald-500/10' : 'text-slate-400 hover:text-emerald-500 hover:bg-slate-100 dark:hover:bg-white/5'}`}
-                              title={t('admin.toggleVIP')}
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => handleToggleRole(u.id, u.role || 'user')}
+                              className="p-2 text-slate-500 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
+                              title="Toggle Role"
                             >
-                              <Sparkles size={14} />
+                              <Shield size={16} />
                             </button>
-                            <button onClick={() => handleToggleStatus(u.id, u.isActive)} className={`p-1.5 rounded-lg transition-all ${u.isActive ? 'text-amber-500 hover:bg-amber-500/10' : 'text-emerald-500 hover:bg-emerald-500/10'}`} title={u.isActive ? t('admin.deactivate') : t('admin.activate')}><RefreshCw size={14} /></button>
-                            <button onClick={() => handleDeleteId(u.id)} disabled={isDeletingUser === u.id} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all disabled:opacity-50" title={t('history.delete')}>{isDeletingUser === u.id ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}</button>
+                            <button
+                              onClick={() => handleToggleStatus(u.id, u.isActive)}
+                              className={`p-2 rounded-lg transition-all ${u.isActive ? 'text-amber-500 hover:bg-amber-500/10' : 'text-emerald-500 hover:bg-emerald-500/10'}`}
+                              title={u.isActive ? 'Deactivate' : 'Activate'}
+                            >
+                              <RefreshCw size={16} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteId(u.id)}
+                              disabled={isDeletingUser === u.id}
+                              className="p-2 text-slate-500 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all disabled:opacity-50"
+                              title="Delete"
+                            >
+                              {isDeletingUser === u.id ? <RefreshCw size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                            </button>
                           </div>
                         </td>
                       </tr>
                     ))}
                     {filteredUsers.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="py-10 text-center text-slate-500 italic text-sm">
-                          {t('admin.noUsers')}
+                        <td colSpan={6} className="py-10 text-center text-slate-500 italic text-sm">
+                          No Access Codes found matching your search.
                         </td>
                       </tr>
                     )}
@@ -1308,21 +647,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
               <div className="flex items-center gap-3">
                 <User className="text-brand-purple" size={20} />
-                <h3 className="text-lg font-bold text-slate-900 dark:text-white">{t('admin.registeredUsers')}</h3>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">Registered Users</h3>
                 <span className="px-2 py-0.5 bg-brand-purple/20 text-brand-purple border border-brand-purple/30 rounded-lg text-[10px] font-bold uppercase">
-                  {filteredRegisteredUsers.length} {t('admin.stats')}
+                  {registeredUsers.length} Total
                 </span>
-              </div>
-              
-              <div className="relative w-full md:w-64">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                <input
-                  type="text"
-                  value={memberSearchQuery}
-                  onChange={(e) => setMemberSearchQuery(e.target.value)}
-                  placeholder={t('ui.search')}
-                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-white/10 rounded-xl pl-10 pr-4 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-purple/30 shadow-inner"
-                />
               </div>
             </div>
 
@@ -1335,23 +663,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-white/5">
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.user')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.roleLabel')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.verification')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.joined')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.lastActivity')}</th>
-                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">{t('admin.actions')}</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">User</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Role</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Verification</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Joined</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Last Activity</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-white/5">
-                    {filteredRegisteredUsers.map((user) => (
+                    {registeredUsers.map((user) => (
                       <tr key={user.uid} className="hover:bg-slate-50 dark:hover:bg-white/5 transition-colors group">
                         <td className="px-4 py-4">
                           <div className="flex flex-col">
                             <span className="text-sm text-slate-900 dark:text-white font-medium">{user.email}</span>
-                            {user.uid !== 'saw_vlogs_2026' && (
-                              <span className="text-[10px] text-slate-500 font-mono">{user.uid}</span>
-                            )}
+                            <span className="text-[10px] text-slate-500 font-mono">{user.uid}</span>
                           </div>
                         </td>
                         <td className="px-4 py-4">
@@ -1391,7 +717,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
                               className="p-2 text-slate-500 hover:text-brand-purple hover:bg-brand-purple/10 rounded-lg transition-all"
                               title="Toggle Role"
                             >
-                              <ShieldCheck size={16} />
+                              <Shield size={16} />
                             </button>
                             {!user.is_verified && (
                               <button
@@ -1423,321 +749,162 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
       </div>
       )}
 
-      {activeTab === 'system' && !configOnly && (
-        <div className="max-w-4xl mx-auto w-full space-y-8">
-          {/* API Key Rotation & Switch */}
-          <div className="premium-glass rounded-[32px] p-6 sm:p-8 shadow-2xl transition-all duration-300 border border-white/5">
-            <div className="flex items-center gap-3 mb-8">
-              <div className="w-10 h-10 bg-brand-purple/20 text-brand-purple rounded-xl flex items-center justify-center border border-brand-purple/20">
-                <Key size={20} />
+      {activeTab === 'system' && (
+        <div className="max-w-4xl mx-auto w-full">
+          <div className="bg-white/50 backdrop-blur dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl transition-colors duration-300">
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-brand-purple/20 text-brand-purple rounded-xl flex items-center justify-center border border-brand-purple/20">
+                  <Settings size={20} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900 dark:text-white">System Settings</h3>
+                  <p className="text-slate-500 dark:text-slate-400 text-xs">Configure Firebase and Telegram Integrations</p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-xl font-bold text-slate-900 dark:text-white">{t('admin.apiKeyRotation')}</h3>
-                <p className="text-slate-500 dark:text-slate-400 text-xs">{t('admin.apiKeyRotationDesc')}</p>
-              </div>
+              <button
+                onClick={() => setShowSecrets(!showSecrets)}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-900/50 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 dark:text-slate-400 text-xs font-bold transition-all"
+              >
+                {showSecrets ? <EyeOff size={14} /> : <Eye size={14} />}
+                {showSecrets ? 'Hide Secrets' : 'Show Secrets'}
+              </button>
             </div>
 
-            <form onSubmit={handleSaveGlobalSettings} className="space-y-6">
-              <div className="bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-6">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <h4 className="text-sm font-bold text-slate-900 dark:text-white">{t('admin.allowAdminKeys')}</h4>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">{t('admin.allowAdminKeysDesc')}</p>
+            <form onSubmit={handleSaveSystemConfig} className="space-y-8">
+              {isSystemLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <RefreshCw size={32} className="text-brand-purple animate-spin" />
+                </div>
+              ) : (
+                <>
+                  {/* Firebase Section */}
+              <div className="space-y-6">
+                <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
+                  <Database size={16} className="text-brand-purple" />
+                  <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Firebase Configuration</h4>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Project ID</label>
+                    <input
+                      type="text"
+                      value={systemConfig.firebase_project_id}
+                      onChange={(e) => setSystemConfig({ ...systemConfig, firebase_project_id: e.target.value })}
+                      placeholder="e.g. my-project-123"
+                      className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">API Key</label>
+                    <input
+                      type={showSecrets ? "text" : "password"}
+                      value={systemConfig.firebase_api_key}
+                      onChange={(e) => setSystemConfig({ ...systemConfig, firebase_api_key: e.target.value })}
+                      placeholder="AIzaSy..."
+                      className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Auth Domain</label>
+                    <input
+                      type="text"
+                      value={systemConfig.firebase_auth_domain}
+                      onChange={(e) => setSystemConfig({ ...systemConfig, firebase_auth_domain: e.target.value })}
+                      placeholder="my-project.firebaseapp.com"
+                      className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">App ID</label>
+                    <input
+                      type="text"
+                      value={systemConfig.firebase_app_id}
+                      onChange={(e) => setSystemConfig({ ...systemConfig, firebase_app_id: e.target.value })}
+                      placeholder="1:123456789:web:abcdef"
+                      className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Telegram Section */}
+              <div className="space-y-6">
+                <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
+                  <Send size={16} className="text-brand-purple" />
+                  <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Telegram Notifications</h4>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Bot Token</label>
+                    <input
+                      type={showSecrets ? "text" : "password"}
+                      value={systemConfig.telegram_bot_token}
+                      onChange={(e) => setSystemConfig({ ...systemConfig, telegram_bot_token: e.target.value })}
+                      placeholder="123456789:ABC..."
+                      className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Chat ID</label>
+                    <input
+                      type="text"
+                      value={systemConfig.telegram_chat_id}
+                      onChange={(e) => setSystemConfig({ ...systemConfig, telegram_chat_id: e.target.value })}
+                      placeholder="e.g. -100123456789"
+                      className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Debug & Testing Section */}
+              <div className="space-y-6">
+                <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
+                  <RefreshCw size={16} className="text-brand-purple" />
+                  <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Debug & Testing</h4>
+                </div>
+                
+                <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                  <div>
+                    <h5 className="text-sm font-bold text-slate-900 dark:text-white">Mock Generation Mode</h5>
+                    <p className="text-xs text-slate-500">Enable this to test UI transitions without calling the real Gemini API.</p>
                   </div>
                   <button
                     type="button"
-                    onClick={() => setGlobalSettings({ ...globalSettings, allow_admin_keys: !globalSettings.allow_admin_keys })}
-                    className={`w-12 h-6 rounded-full transition-all relative ${globalSettings.allow_admin_keys ? 'bg-brand-purple' : 'bg-slate-300 dark:bg-slate-700'}`}
+                    onClick={() => setSystemConfig({ ...systemConfig, mock_mode: !systemConfig.mock_mode })}
+                    className={`w-12 h-6 rounded-full transition-all relative ${systemConfig.mock_mode ? 'bg-brand-purple' : 'bg-slate-300 dark:bg-slate-700'}`}
                   >
-                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${globalSettings.allow_admin_keys ? 'left-7' : 'left-1'}`} />
+                    <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${systemConfig.mock_mode ? 'left-7' : 'left-1'}`} />
                   </button>
                 </div>
+              </div>
 
-                <div className="space-y-6">
-                  <div className="grid grid-cols-1 gap-4">
-                    {/* Primary Key */}
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between px-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.primaryKey')}</label>
-                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${GeminiTTSService.getActiveKeyIndex() === 0 ? 'text-brand-purple bg-brand-purple/10' : 'text-slate-400 bg-slate-100 dark:bg-slate-800'}`}>
-                          {GeminiTTSService.getActiveKeyIndex() === 0 ? t('admin.active') : t('admin.standby')}
-                        </span>
-                      </div>
-                      <input
-                        type={showSecrets ? "text" : "password"}
-                        value={globalSettings.primary_key || ''}
-                        onChange={(e) => setGlobalSettings({ ...globalSettings, primary_key: e.target.value })}
-                        placeholder="Enter Primary Gemini API Key..."
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                      />
-                    </div>
-
-                    {/* Secondary Key */}
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between px-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.secondaryKey')}</label>
-                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${GeminiTTSService.getActiveKeyIndex() === 1 ? 'text-brand-purple bg-brand-purple/10' : 'text-slate-400 bg-slate-100 dark:bg-slate-800'}`}>
-                          {GeminiTTSService.getActiveKeyIndex() === 1 ? t('admin.active') : t('admin.backup1')}
-                        </span>
-                      </div>
-                      <input
-                        type={showSecrets ? "text" : "password"}
-                        value={globalSettings.secondary_key || ''}
-                        onChange={(e) => setGlobalSettings({ ...globalSettings, secondary_key: e.target.value })}
-                        placeholder="Enter Secondary Gemini API Key..."
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                      />
-                    </div>
-
-                    {/* Backup Key */}
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between px-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{t('admin.backupKey')}</label>
-                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase ${GeminiTTSService.getActiveKeyIndex() === 2 ? 'text-brand-purple bg-brand-purple/10' : 'text-slate-400 bg-slate-100 dark:bg-slate-800'}`}>
-                          {GeminiTTSService.getActiveKeyIndex() === 2 ? t('admin.active') : t('admin.backup2')}
-                        </span>
-                      </div>
-                      <input
-                        type={showSecrets ? "text" : "password"}
-                        value={globalSettings.backup_key || ''}
-                        onChange={(e) => setGlobalSettings({ ...globalSettings, backup_key: e.target.value })}
-                        placeholder="Enter Backup Gemini API Key..."
-                        className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm font-mono text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                      />
-                    </div>
-                  </div>
-
-                  <p className="text-[10px] text-slate-500 italic px-1">
-                    {t('admin.keyRotationDesc')}
-                  </p>
-                </div>
-
+              <div className="pt-6">
                 <button
                   type="submit"
-                  disabled={isSavingKeys}
-                  className="w-full py-3.5 bg-brand-purple hover:bg-brand-purple/90 text-white rounded-xl text-sm font-bold shadow-lg shadow-brand-purple/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                  disabled={isSavingSystem}
+                  className="w-full py-4 bg-brand-purple text-white rounded-2xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95"
                 >
-                  {isSavingKeys ? (
-                    <div className="flex items-center gap-0.5 h-4">
-                      {[...Array(3)].map((_, i) => (
-                        <motion.div
-                          key={i}
-                          className="w-0.5 bg-white rounded-full"
-                          animate={{
-                            height: [4, 12, 4],
-                          }}
-                          transition={{
-                            duration: 0.6,
-                            repeat: Infinity,
-                            delay: i * 0.1,
-                          }}
-                        />
-                      ))}
-                    </div>
-                  ) : <Save size={18} />}
-                  {t('admin.saveSettings')}
+                  {isSavingSystem ? <RefreshCw size={20} className="animate-spin" /> : <Save size={20} />}
+                  Save System Configuration
                 </button>
+                <p className="text-center text-[10px] text-slate-500 mt-4 italic">
+                  Note: Changes to Firebase settings may require an app reload to take full effect.
+                </p>
               </div>
+                </>
+              )}
             </form>
           </div>
         </div>
       )}
 
-      {configOnly && (
-        <div className="max-w-4xl mx-auto w-full space-y-12">
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex items-center gap-3 text-amber-600 mb-8">
-              <Shield size={20} />
-              <p className="text-xs font-bold uppercase tracking-widest">Infrastructure Configuration Mode</p>
-            </div>
-          
-          {/* Firebase & Telegram Settings */}
-          <div className="bg-white/50 backdrop-blur dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl transition-colors duration-300">
-              <div className="flex items-center justify-between mb-8">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-brand-purple/20 text-brand-purple rounded-xl flex items-center justify-center border border-brand-purple/20">
-                    <Settings size={20} />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-bold text-slate-900 dark:text-white">Firebase & Telegram Settings</h3>
-                    <p className="text-slate-500 dark:text-slate-400 text-xs">Configure Infrastructure Integrations</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowSecrets(!showSecrets)}
-                  className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-900/50 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 dark:text-slate-400 text-xs font-bold transition-all"
-                >
-                  {showSecrets ? <EyeOff size={14} /> : <Eye size={14} />}
-                  {showSecrets ? 'Hide Secrets' : 'Show Secrets'}
-                </button>
-              </div>
-
-              <form onSubmit={handleSaveSystemConfig} className="space-y-8">
-                {isSystemLoading ? (
-                  <div className="flex items-center justify-center py-20">
-                    <div className="flex items-center justify-center gap-1 h-10">
-                      {[...Array(5)].map((_, i) => (
-                        <motion.div
-                          key={i}
-                          className="w-1 bg-brand-purple rounded-full"
-                          animate={{
-                            height: [10, 30, 10],
-                            opacity: [0.5, 1, 0.5],
-                          }}
-                          transition={{
-                            duration: 0.8,
-                            repeat: Infinity,
-                            delay: i * 0.1,
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    {/* Firebase Section */}
-                <div className="space-y-6">
-                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
-                    <Database size={16} className="text-brand-purple" />
-                    <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Firebase Configuration</h4>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Project ID</label>
-                      <input
-                        type="text"
-                        value={systemConfig.firebase_project_id}
-                        onChange={(e) => setSystemConfig({ ...systemConfig, firebase_project_id: e.target.value })}
-                        placeholder="e.g. my-project-123"
-                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">API Key</label>
-                      <input
-                        type={showSecrets ? "text" : "password"}
-                        value={systemConfig.firebase_api_key}
-                        onChange={(e) => setSystemConfig({ ...systemConfig, firebase_api_key: e.target.value })}
-                        placeholder="AIzaSy..."
-                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Auth Domain</label>
-                      <input
-                        type="text"
-                        value={systemConfig.firebase_auth_domain}
-                        onChange={(e) => setSystemConfig({ ...systemConfig, firebase_auth_domain: e.target.value })}
-                        placeholder="my-project.firebaseapp.com"
-                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">App ID</label>
-                      <input
-                        type="text"
-                        value={systemConfig.firebase_app_id}
-                        onChange={(e) => setSystemConfig({ ...systemConfig, firebase_app_id: e.target.value })}
-                        placeholder="1:123456789:web:abcdef"
-                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Telegram Section */}
-                <div className="space-y-6">
-                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
-                    <Send size={16} className="text-brand-purple" />
-                    <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Telegram Notifications</h4>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Bot Token</label>
-                      <input
-                        type={showSecrets ? "text" : "password"}
-                        value={systemConfig.telegram_bot_token}
-                        onChange={(e) => setSystemConfig({ ...systemConfig, telegram_bot_token: e.target.value })}
-                        placeholder="123456789:ABC..."
-                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all font-mono"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Chat ID</label>
-                      <input
-                        type="text"
-                        value={systemConfig.telegram_chat_id}
-                        onChange={(e) => setSystemConfig({ ...systemConfig, telegram_chat_id: e.target.value })}
-                        placeholder="e.g. -100123456789"
-                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-purple/50 transition-all"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Debug & Testing Section */}
-                <div className="space-y-6">
-                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-white/5">
-                    <RefreshCw size={16} className="text-brand-purple" />
-                    <h4 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Debug & Testing</h4>
-                  </div>
-                  
-                  <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
-                    <div>
-                      <h5 className="text-sm font-bold text-slate-900 dark:text-white">Mock Generation Mode</h5>
-                      <p className="text-xs text-slate-500">Enable this to test UI transitions without calling the real Gemini API.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setSystemConfig({ ...systemConfig, mock_mode: !systemConfig.mock_mode })}
-                      className={`w-12 h-6 rounded-full transition-all relative ${systemConfig.mock_mode ? 'bg-brand-purple' : 'bg-slate-300 dark:bg-slate-700'}`}
-                    >
-                      <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${systemConfig.mock_mode ? 'left-7' : 'left-1'}`} />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="pt-6">
-                  <button
-                    type="submit"
-                    disabled={isSavingSystem}
-                    className="w-full py-4 bg-brand-purple text-white rounded-2xl font-bold hover:bg-brand-purple/90 transition-all shadow-lg shadow-brand-purple/20 flex items-center justify-center gap-2 disabled:opacity-50 active:scale-95"
-                  >
-                    {isSavingSystem ? (
-                      <div className="flex items-center gap-0.5 h-5">
-                        {[...Array(3)].map((_, i) => (
-                          <motion.div
-                            key={i}
-                            className="w-1 bg-white rounded-full"
-                            animate={{
-                              height: [6, 16, 6],
-                            }}
-                            transition={{
-                              duration: 0.6,
-                              repeat: Infinity,
-                              delay: i * 0.1,
-                            }}
-                          />
-                        ))}
-                      </div>
-                    ) : <Save size={20} />}
-                    Save System Configuration
-                  </button>
-                  <p className="text-center text-[10px] text-slate-500 mt-4 italic">
-                    Note: Changes to Firebase settings may require an app reload to take full effect.
-                  </p>
-                </div>
-                  </>
-                )}
-              </form>
-            </div>
-        </div>
-      )}
-
-      {activeTab === 'rules' && !configOnly && (
+      {activeTab === 'rules' && (
         <div className="max-w-4xl mx-auto w-full">
-          <div className="premium-glass rounded-[32px] p-6 sm:p-8 shadow-2xl transition-all duration-300 border border-white/5">
+          <div className="bg-white/50 backdrop-blur dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl transition-colors duration-300">
             <div className="flex items-center justify-between mb-8">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-brand-purple/20 text-brand-purple rounded-xl flex items-center justify-center border border-brand-purple/20">
@@ -1804,23 +971,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
 
               {isRulesLoading ? (
                 <div className="flex items-center justify-center py-10">
-                  <div className="flex items-center justify-center gap-1 h-8">
-                    {[...Array(4)].map((_, i) => (
-                      <motion.div
-                        key={i}
-                        className="w-1 bg-brand-purple rounded-full"
-                        animate={{
-                          height: [8, 24, 8],
-                          opacity: [0.5, 1, 0.5],
-                        }}
-                        transition={{
-                          duration: 0.8,
-                          repeat: Infinity,
-                          delay: i * 0.1,
-                        }}
-                      />
-                    ))}
-                  </div>
+                  <RefreshCw size={24} className="text-brand-purple animate-spin" />
                 </div>
               ) : rules.length === 0 ? (
                 <div className="py-10 text-center text-slate-500 italic text-sm">
@@ -1868,116 +1019,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isAuthReady, onA
       )}
     </div>
 
-      {/* Activity Logs Modal */}
-      <AnimatePresence>
-        {selectedUserLogs && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setSelectedUserLogs(null)}
-              className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-2xl bg-white dark:bg-slate-900 rounded-[32px] shadow-2xl border border-slate-200 dark:border-white/10 overflow-hidden flex flex-col max-h-[80vh]"
-            >
-              <div className="p-6 border-b border-slate-200 dark:border-white/5 flex items-center justify-between bg-slate-50/50 dark:bg-white/[0.02]">
-                <div className="flex items-center gap-4">
-                  <div className="p-3 bg-brand-purple/10 rounded-2xl text-brand-purple">
-                    <History size={24} />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-bold text-slate-900 dark:text-white tracking-tight">လုပ်ဆောင်ချက်မှတ်တမ်းများ</h3>
-                    <p className="text-xs text-slate-500 font-medium font-mono uppercase tracking-wider mt-1">User ID: {selectedUserLogs}</p>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => setSelectedUserLogs(null)}
-                  className="p-2 hover:bg-slate-200 dark:hover:bg-white/10 rounded-xl transition-all text-slate-500"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-4">
-                {isLogsLoading ? (
-                   <div className="flex flex-col items-center justify-center py-20 gap-4">
-                     <RefreshCw size={32} className="text-brand-purple animate-spin" />
-                     <p className="text-sm text-slate-500 font-bold uppercase tracking-widest animate-pulse">Loading Logs...</p>
-                   </div>
-                ) : activityLogs.length === 0 ? (
-                   <div className="text-center py-20 bg-slate-50 dark:bg-white/5 rounded-3xl border border-dashed border-slate-200 dark:border-slate-800">
-                     <p className="text-slate-500 italic">မှတ်တမ်းမရှိသေးပါ။ (No logs found for this user.)</p>
-                   </div>
-                ) : (
-                  <div className="space-y-3">
-                    {activityLogs.map((log) => (
-                      <div key={log.id} className="p-4 bg-slate-50 dark:bg-white/5 rounded-2xl border border-slate-200 dark:border-white/10 flex items-start gap-4 hover:border-brand-purple/30 transition-all group">
-                        <div className={`p-2 rounded-xl shrink-0 ${
-                          log.type === 'login' ? 'bg-blue-500/10 text-blue-500' :
-                          log.type === 'tts' ? 'bg-brand-purple/10 text-brand-purple' :
-                          log.type === 'transcription' ? 'bg-amber-500/10 text-amber-500' :
-                          'bg-emerald-500/10 text-emerald-500'
-                        }`}>
-                          {log.type === 'login' ? <LogIn size={16} /> :
-                           log.type === 'tts' ? <Mic2 size={16} /> :
-                           log.type === 'transcription' ? <FileVideo size={16} /> :
-                           <CheckCircle2 size={16} />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-4 mb-1">
-                            <span className="text-xs font-bold uppercase tracking-widest text-slate-400">
-                              {log.type}
-                            </span>
-                            <span className="text-[10px] text-slate-500 font-medium">
-                              {log.createdAt ? new Date(log.createdAt).toLocaleString() : '—'}
-                            </span>
-                          </div>
-                          <p className="text-sm text-slate-700 dark:text-slate-300 font-medium leading-relaxed">
-                            {log.details}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              
-              <div className="p-6 border-t border-slate-200 dark:border-white/5 bg-slate-50/50 dark:bg-white/[0.02] flex justify-end">
-                <button
-                  onClick={() => setSelectedUserLogs(null)}
-                  className="px-6 py-2.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-xl font-bold text-sm hover:opacity-90 transition-all shadow-lg"
-                >
-                  Close
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
       <Toast 
         message={toast.message}
         type={toast.type}
         isVisible={toast.isVisible}
         onClose={() => setToast(prev => ({ ...prev, isVisible: false }))}
-      />
-      <Modal
-        isOpen={modal.isOpen}
-        onClose={() => setModal({ ...modal, isOpen: false })}
-        onConfirm={modal.onConfirm}
-        title={modal.title}
-        message={modal.message}
-        type={modal.type}
-        confirmText={modal.confirmText}
-        cancelText={modal.cancelText}
-        placeholder={modal.placeholder}
-        defaultValue={modal.defaultValue}
-        inputType={modal.inputType}
       />
     </>
   );
